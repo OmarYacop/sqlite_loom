@@ -1,10 +1,9 @@
 name: sqlite_loom
 description: Generator-free reactive SQLite layer with typed tables, immutable queries, and transaction-aware streams.
-version: 0.1.0
+version: 0.1.1
 homepage: https://github.com/OmarYacop/sqlite_loom
 repository: https://github.com/OmarYacop/sqlite_loom
 issue_tracker: https://github.com/OmarYacop/sqlite_loom/issues
-documentation: https://pub.dev/documentation/sqlite_loom/latest/
 
 topics:
   - sqlite
