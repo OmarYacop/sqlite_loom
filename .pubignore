@@ -1,0 +1,6 @@
+.dart_tool/
+.github/
+build/
+coverage/
+doc/api/
+pubspec.lock
