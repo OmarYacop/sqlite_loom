@@ -1,8 +1,17 @@
 /// A parameterized SQL boolean expression.
 final class DbPredicate {
-  /// Creates a trusted SQL fragment with bound [arguments].
+  /// Creates a developer-authored SQL fragment with bound [arguments].
+  ///
+  /// Prefer [DbPredicate.trusted] at application trust boundaries. Never place
+  /// user-controlled values in [sql]; pass them through [arguments].
   DbPredicate(this.sql, [List<Object?> arguments = const []])
     : arguments = List.unmodifiable(arguments);
+
+  /// Explicitly creates a trusted SQL fragment with bound [arguments].
+  factory DbPredicate.trusted(
+    String sql, [
+    List<Object?> arguments = const [],
+  ]) => DbPredicate(sql, arguments);
 
   /// A predicate that matches every row.
   static final always = DbPredicate('1 = 1');
@@ -44,8 +53,14 @@ final class DbPredicate {
 
 /// A trusted SQL ordering expression.
 final class DbOrdering {
-  /// Creates an ordering from [sql].
+  /// Creates a developer-authored ordering from [sql].
+  ///
+  /// Prefer [DbOrdering.trusted] at application trust boundaries. Never place
+  /// user-controlled values in this SQL fragment.
   const DbOrdering(this.sql);
+
+  /// Explicitly creates a trusted ordering SQL fragment.
+  const DbOrdering.trusted(String sql) : this(sql);
 
   /// The SQL used in an `ORDER BY` clause.
   final String sql;

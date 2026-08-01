@@ -130,8 +130,9 @@ final migrations = [
 await SqliteLoomMigrator(rawDatabase, migrations: migrations).migrate();
 ```
 
-`DbSchema` also supports indexes, foreign keys, adding columns, renaming tables,
-and explicit SQL literals for defaults.
+`DbSchema` also supports indexes, foreign keys, checks, adding/renaming/dropping
+columns, views, strict and without-rowid tables, and explicit SQL literals for
+defaults.
 
 ## Query
 
@@ -146,6 +147,33 @@ final todo = await db.todos.find(42);
 final exists = await db.todos.where(TodosTable.done.equals(false)).exists();
 final count = await db.todos.where(TodosTable.done.equals(false)).count();
 ```
+
+Read a single column without fetching or decoding the complete model:
+
+```dart
+final titles = await db.todos
+    .orderBy(TodosTable.title.ascending())
+    .pluck(TodosTable.title)
+    .get();
+
+final summaries = await db.todos
+    .select([TodosTable.id, TodosTable.title])
+    .get();
+final firstTitle = summaries.first.get(TodosTable.title);
+```
+
+Queries also provide `sum`, `average`, `minimum`, `maximum`, and `after`/`before`
+keyset cursor helpers. Text columns provide `like`, `contains`, `startsWith`,
+and `endsWith` predicates.
+
+Use `compile()` to inspect generated SQL and bound arguments without executing
+it, or `explain()` to inspect SQLite's query plan and index usage.
+For bounded-memory processing, use `pages()` or `keysetPages()` with a unique
+cursor column.
+
+Selections support `distinct()` and `decodeWith(...)`. Cross-table reads use
+`joinFrom(...)` with explicitly qualified `DbJoinColumn` values so duplicate
+column names remain unambiguous.
 
 Predicates compose without mutating the source query:
 
@@ -174,6 +202,20 @@ await db.todos
 await db.todos.whereKey(id).delete();
 ```
 
+Bulk inserts and upserts use SQLite batches:
+
+```dart
+await db.todos.insertAll(newTodos);
+await db.todos.upsertAll(synchronizedTodos);
+```
+
+`upsert` and `upsertAll` use SQLite `ON CONFLICT ... DO UPDATE`, defaulting to
+the table primary key. Pass `conflictTarget` for another unique key. `save`
+retains explicit `INSERT OR REPLACE` behavior for compatibility.
+Bulk methods accept `batchSize` for bounded synchronization workloads. SQLite
+`RETURNING` variants avoid follow-up reads, while `updateIfVersion` supports
+optimistic concurrency and `softDelete` updates deletion timestamps.
+
 An unfiltered mutation throws:
 
 ```dart
@@ -200,6 +242,9 @@ You can also use `watchCount`, `watchExists`, and `watchFirstOrNull`. Watches
 emit an initial value, then rerun after relevant writes. Override
 `DbTable.equals` for value-based duplicate suppression.
 
+Queries created with `whereKey` avoid rerunning for writes whose known primary
+keys do not match. Writes with unknown affected keys still invalidate them.
+
 ## Transactions
 
 ```dart
@@ -212,6 +257,20 @@ await db.transaction((tx) async {
 
 Do not create a live query inside a transaction. Changes are collected and
 published only after a successful commit.
+Nested `savepoint` callbacks isolate rollback and reactive changes.
+
+## Operations and diagnostics
+
+Pass a `DbObserver` to `SqliteLoom` for query/write durations and result counts;
+bound values are never exposed. `configure` applies foreign keys, WAL, busy
+timeouts, and synchronous durability. Maintenance helpers include
+`integrityCheck`, `optimize`, `vacuum`, and `backupTo`.
+
+Migration callbacks may declare stable checksums. `DbSchema.validate` compares
+the columns declared by `DbTable.columns` with the live SQLite schema.
+
+Import `package:sqlite_loom/testing.dart` for `SqliteLoomTestHarness`. Run
+`dart run benchmark/bulk_writes.dart` to measure batched writes locally.
 
 ## Raw writes
 
@@ -226,7 +285,31 @@ await db.rawWrite(
 );
 ```
 
+Raw reads and multi-table reactive reads remain available without expanding the
+typed table DSL:
+
+```dart
+final rows = await db.rawRead('SELECT title FROM todos WHERE done = ?',
+    arguments: [0]);
+
+final stream = db.watchRaw(
+  'SELECT COUNT(*) AS count FROM todos',
+  dependsOn: {const DbTableId('todos')},
+);
+```
+
 Bind all user-controlled values. Raw SQL fragments are trusted developer input.
+
+Runtime-dependent features such as `RETURNING`, strict tables, FTS5, column
+drops, and `VACUUM INTO` are guarded. Inspect the active engine when adapting
+behavior across platforms:
+
+```dart
+final capabilities = await db.capabilities();
+if (capabilities.supports(DbFeature.fts5)) {
+  // Install or use the FTS-backed search schema.
+}
+```
 
 ## Migration CLI
 
@@ -246,6 +329,10 @@ Supported commands are `migrate`, `status`, `rollback`, `reset`, `refresh`, and
 
 ## Documentation
 
+- [1.0 readiness roadmap](doc/ROADMAP_1_0.md)
+- [Public API and compatibility contract](doc/PUBLIC_API.md)
+- [Foundation hardening audit](doc/FOUNDATION_AUDIT.md)
+- [Security policy](SECURITY.md)
 - [Complete runnable example](example/sqlite_loom_example.dart)
 - [Best practices](doc/BEST_PRACTICES.md)
 - [Compact AI coding context](doc/AI_CONTEXT.md)

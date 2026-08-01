@@ -72,9 +72,10 @@ final stream = users
 
 - Column and table names are quoted, but custom predicate SQL and raw SQL remain
   trusted developer input. Bind user values through typed predicates.
-- `save`/`upsert` use SQLite `INSERT OR REPLACE` semantics by default. SQLite
-  replacement can delete and recreate a row; choose another conflict algorithm
-  if foreign keys or triggers make that inappropriate.
+- `upsert`/`upsertAll` use native SQLite `ON CONFLICT ... DO UPDATE`, defaulting
+  to the primary key. `save` retains `INSERT OR REPLACE` compatibility semantics.
+- Prefer `pluck(column)` for one value or `select([column1, column2, ...])` for a
+  partial row, and `upsertAll` or `insertAll` for bulk writes.
 - Live query invalidation is process-local. Writes performed directly on the
   underlying database must go through `rawWrite` or otherwise arrange refresh.
 - `DateTime` columns encode UTC milliseconds and decode to local time.

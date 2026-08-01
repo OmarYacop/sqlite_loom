@@ -1,4 +1,5 @@
 import 'column.dart';
+import 'expression.dart';
 import 'row.dart';
 import 'values.dart';
 
@@ -22,6 +23,36 @@ final class DbTableId {
   String toString() => name;
 }
 
+/// One typed component of a composite key.
+abstract interface class AnyDbKeyPart {
+  DbPredicate get predicate;
+}
+
+final class DbKeyPart<T> implements AnyDbKeyPart {
+  const DbKeyPart(this.column, this.value);
+  final DbColumn<T> column;
+  final T value;
+
+  @override
+  DbPredicate get predicate => column.equals(value);
+}
+
+/// A non-empty collection of column values forming a composite key.
+final class DbCompositeKey {
+  DbCompositeKey(Iterable<AnyDbKeyPart> parts)
+    : parts = List.unmodifiable(parts) {
+    if (this.parts.isEmpty) {
+      throw ArgumentError.value(parts, 'parts', 'Cannot be empty');
+    }
+  }
+
+  final List<AnyDbKeyPart> parts;
+
+  DbPredicate get predicate => parts
+      .map((part) => part.predicate)
+      .reduce((left, right) => left.and(right));
+}
+
 /// Maps between a domain [Row] and one SQLite table with primary key [Key].
 abstract class DbTable<Row, Key> {
   /// Creates a table mapping.
@@ -32,6 +63,11 @@ abstract class DbTable<Row, Key> {
 
   /// The column that uniquely identifies a row.
   DbColumn<Key> get primaryKey;
+
+  /// Columns declared for runtime schema validation.
+  ///
+  /// Override with every mapped column for complete validation.
+  Iterable<AnyDbColumn> get columns => [primaryKey];
 
   /// The identity used for change invalidation.
   DbTableId get tableId => DbTableId(tableName);

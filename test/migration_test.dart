@@ -94,6 +94,124 @@ void main() {
     },
   );
 
+  test('migration checksums detect edited released migrations', () async {
+    final original = CallbackDbMigration(
+      version: 1,
+      name: 'create_checked',
+      checksum: 'v1-original',
+      up: (db) => db.execute('CREATE TABLE checked (id INTEGER)'),
+    );
+    await SqliteLoomMigrator(database, migrations: [original]).migrate();
+    final changed = CallbackDbMigration(
+      version: 1,
+      name: 'create_checked',
+      checksum: 'v1-edited',
+      up: (_) {},
+    );
+
+    await expectLater(
+      SqliteLoomMigrator(database, migrations: [changed]).migrate(),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test('migration checksums cannot be removed after release', () async {
+    final original = CallbackDbMigration(
+      version: 1,
+      name: 'create_checked',
+      checksum: 'v1-original',
+      up: (db) => db.execute('CREATE TABLE checked (id INTEGER)'),
+    );
+    await SqliteLoomMigrator(database, migrations: [original]).migrate();
+    final checksumRemoved = CallbackDbMigration(
+      version: 1,
+      name: 'create_checked',
+      up: (_) {},
+    );
+
+    await expectLater(
+      SqliteLoomMigrator(database, migrations: [checksumRemoved]).migrate(),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test('failed migration rolls back schema and migration history', () async {
+    final migration = CallbackDbMigration(
+      version: 1,
+      name: 'fail_after_schema_change',
+      checksum: 'failure-fixture-v1',
+      up: (db) async {
+        await db.execute('CREATE TABLE should_rollback (id INTEGER)');
+        throw StateError('injected migration failure');
+      },
+    );
+
+    await expectLater(
+      SqliteLoomMigrator(database, migrations: [migration]).migrate(),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(await _tableExists(database, 'should_rollback'), isFalse);
+    expect(await _tableExists(database, 'sqlite_loom_migrations'), isFalse);
+  });
+
+  test('concurrent migrators serialize and apply each version once', () async {
+    final first = SqliteLoomMigrator(database, migrations: testMigrations());
+    final second = SqliteLoomMigrator(database, migrations: testMigrations());
+
+    final results = await Future.wait([first.migrate(), second.migrate()]);
+    final appliedCounts =
+        results.map((result) => result.applied.length).toList()..sort();
+
+    expect(appliedCounts, [0, 2]);
+    final history = await database.query('_sqlite_loom_migrations');
+    expect(history, hasLength(2));
+  });
+
+  test('separate connections cannot apply a migration twice', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'sqlite_loom_migration_race_',
+    );
+    final path = '${directory.path}/race.sqlite';
+    final firstDatabase = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    final secondDatabase = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    await firstDatabase.execute('PRAGMA busy_timeout = 100');
+    await secondDatabase.execute('PRAGMA busy_timeout = 100');
+    final migrations = [
+      CallbackDbMigration(
+        version: 1,
+        name: 'create_race_table',
+        checksum: 'race-v1',
+        up: (db) => db.execute('CREATE TABLE race_table (id INTEGER)'),
+      ),
+    ];
+
+    try {
+      final results = await Future.wait([
+        SqliteLoomMigrator(firstDatabase, migrations: migrations).migrate(),
+        SqliteLoomMigrator(secondDatabase, migrations: migrations).migrate(),
+      ]);
+      final counts = results.map((result) => result.applied.length).toList()
+        ..sort();
+      expect(counts, [0, 1]);
+      expect(
+        await firstDatabase.query('_sqlite_loom_migrations'),
+        hasLength(1),
+      );
+    } finally {
+      await firstDatabase.close();
+      await secondDatabase.close();
+      await databaseFactoryFfi.deleteDatabase(path);
+      await directory.delete(recursive: true);
+    }
+  });
+
   test(
     'runSqliteLoomCli executes app-owned commands against a database path',
     () async {

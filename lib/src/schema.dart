@@ -1,6 +1,29 @@
 import 'package:sqflite_common/sqlite_api.dart';
 
+import 'capabilities.dart';
 import 'internal/sql.dart';
+import 'table.dart';
+
+/// One runtime schema mismatch.
+final class DbSchemaIssue {
+  const DbSchemaIssue(this.table, this.message);
+  final String table;
+  final String message;
+}
+
+/// Result of comparing mapped tables with the live SQLite schema.
+final class DbSchemaValidation {
+  const DbSchemaValidation(this.issues);
+  final List<DbSchemaIssue> issues;
+  bool get isValid => issues.isEmpty;
+
+  void throwIfInvalid() {
+    if (isValid) return;
+    throw StateError(
+      issues.map((issue) => '${issue.table}: ${issue.message}').join('; '),
+    );
+  }
+}
 
 /// Marks trusted SQL that should be used as a schema default verbatim.
 final class DbSqlLiteral {
@@ -19,6 +42,71 @@ final class DbSchema {
   /// The underlying executor, often a transaction.
   final DatabaseExecutor database;
 
+  /// Validates declared table columns against SQLite's live schema.
+  Future<DbSchemaValidation> validate(
+    Iterable<DbTable<Object?, Object?>> tables,
+  ) async {
+    final issues = <DbSchemaIssue>[];
+    for (final table in tables) {
+      final declaredNames = table.columns.map((column) => column.name).toList();
+      final duplicateNames =
+          declaredNames.toSet().length != declaredNames.length;
+      if (duplicateNames) {
+        issues.add(
+          DbSchemaIssue(table.tableName, 'mapped columns contain duplicates'),
+        );
+      }
+      final rows = await database.rawQuery(
+        'PRAGMA table_info(${quoteIdentifier(table.tableName)})',
+      );
+      if (rows.isEmpty) {
+        issues.add(DbSchemaIssue(table.tableName, 'table is missing'));
+        continue;
+      }
+      final actual = {for (final row in rows) row['name']! as String: row};
+      final primaryKeyRow = actual[table.primaryKey.name];
+      if (primaryKeyRow != null && (primaryKeyRow['pk'] as num).toInt() == 0) {
+        issues.add(
+          DbSchemaIssue(
+            table.tableName,
+            'column ${table.primaryKey.name} is not a primary key',
+          ),
+        );
+      }
+      for (final column in table.columns) {
+        final row = actual[column.name];
+        if (row == null) {
+          issues.add(
+            DbSchemaIssue(table.tableName, 'column ${column.name} is missing'),
+          );
+          continue;
+        }
+        final expectedAffinity = column.affinity;
+        final actualType = (row['type'] as String).toUpperCase();
+        if (expectedAffinity != null &&
+            !_hasAffinity(actualType, expectedAffinity)) {
+          issues.add(
+            DbSchemaIssue(
+              table.tableName,
+              'column ${column.name} expected $expectedAffinity, found $actualType',
+            ),
+          );
+        }
+        final isPrimaryKey = (row['pk'] as num).toInt() > 0;
+        final isNotNull = (row['notnull'] as num).toInt() == 1;
+        if (!column.acceptsNull && !isNotNull && !isPrimaryKey) {
+          issues.add(
+            DbSchemaIssue(
+              table.tableName,
+              'column ${column.name} permits NULL but its Dart type does not',
+            ),
+          );
+        }
+      }
+    }
+    return DbSchemaValidation(List.unmodifiable(issues));
+  }
+
   /// Adds [column] to [tableName].
   Future<void> addColumn(String tableName, DbColumnDefinition column) {
     return database.execute(
@@ -33,7 +121,7 @@ final class DbSchema {
     List<String> columns, {
     bool ifNotExists = true,
     bool unique = false,
-    String? where,
+    DbSqlLiteral? where,
     Map<String, String> orders = const {},
     Map<String, String> collations = const {},
   }) {
@@ -57,7 +145,7 @@ final class DbSchema {
           return '${quoteIdentifier(column)}$collationSql$orderSql';
         })
         .join(', ');
-    final whereSql = where == null ? '' : ' WHERE $where';
+    final whereSql = where == null ? '' : ' WHERE ${where.sql}';
     return database.execute(
       'CREATE ${uniqueSql}INDEX $ifNotExistsSql${quoteIdentifier(name)} '
       'ON ${quoteIdentifier(tableName)} ($columnSql)$whereSql',
@@ -69,7 +157,12 @@ final class DbSchema {
     String name,
     void Function(DbCreateTable table) define, {
     bool ifNotExists = false,
-  }) {
+    bool strict = false,
+    bool withoutRowId = false,
+  }) async {
+    if (strict) {
+      await requireDbFeature(database, DbFeature.strictTables);
+    }
     final table = DbCreateTable();
     define(table);
     if (table.columns.isEmpty) {
@@ -80,8 +173,11 @@ final class DbSchema {
       ...table.columns.map((column) => column.toSql()),
       ...table.constraints,
     ].join(', ');
-    return database.execute(
-      'CREATE TABLE $ifNotExistsSql${quoteIdentifier(name)} ($definitions)',
+    final options = [if (withoutRowId) 'WITHOUT ROWID', if (strict) 'STRICT'];
+    final optionSql = options.isEmpty ? '' : ' ${options.join(', ')}';
+    await database.execute(
+      'CREATE TABLE $ifNotExistsSql${quoteIdentifier(name)} '
+      '($definitions)$optionSql',
     );
   }
 
@@ -102,6 +198,67 @@ final class DbSchema {
     return database.execute(
       'ALTER TABLE ${quoteIdentifier(from)} RENAME TO ${quoteIdentifier(to)}',
     );
+  }
+
+  /// Renames a column using SQLite's native `ALTER TABLE` support.
+  Future<void> renameColumn(String tableName, String from, String to) {
+    return database.execute(
+      'ALTER TABLE ${quoteIdentifier(tableName)} '
+      'RENAME COLUMN ${quoteIdentifier(from)} TO ${quoteIdentifier(to)}',
+    );
+  }
+
+  /// Drops a column using SQLite's native `ALTER TABLE` support.
+  Future<void> dropColumn(String tableName, String column) async {
+    await requireDbFeature(database, DbFeature.dropColumn);
+    await database.execute(
+      'ALTER TABLE ${quoteIdentifier(tableName)} '
+      'DROP COLUMN ${quoteIdentifier(column)}',
+    );
+  }
+
+  /// Creates a view from a trusted SELECT [query].
+  Future<void> createView(
+    String name,
+    DbSqlLiteral query, {
+    bool ifNotExists = true,
+  }) {
+    final guard = ifNotExists ? 'IF NOT EXISTS ' : '';
+    return database.execute(
+      'CREATE VIEW $guard${quoteIdentifier(name)} AS ${query.sql}',
+    );
+  }
+
+  /// Creates an FTS5 virtual table over quoted [columns].
+  Future<void> createFts5Table(
+    String name,
+    Iterable<String> columns, {
+    String? contentTable,
+    String? tokenizer,
+    bool ifNotExists = true,
+  }) async {
+    final materialized = columns.toList(growable: false);
+    if (materialized.isEmpty) {
+      throw ArgumentError.value(columns, 'columns', 'Cannot be empty');
+    }
+    await requireDbFeature(database, DbFeature.fts5);
+    final options = <String>[
+      ...materialized.map(quoteIdentifier),
+      if (contentTable != null)
+        "content='${contentTable.replaceAll("'", "''")}'",
+      if (tokenizer != null) "tokenize='${tokenizer.replaceAll("'", "''")}'",
+    ];
+    final guard = ifNotExists ? 'IF NOT EXISTS ' : '';
+    await database.execute(
+      'CREATE VIRTUAL TABLE $guard${quoteIdentifier(name)} '
+      'USING fts5(${options.join(', ')})',
+    );
+  }
+
+  /// Drops a view.
+  Future<void> dropView(String name, {bool ifExists = true}) {
+    final guard = ifExists ? 'IF EXISTS ' : '';
+    return database.execute('DROP VIEW $guard${quoteIdentifier(name)}');
   }
 }
 
@@ -128,6 +285,20 @@ String _indexCollation(String collation) {
     );
   }
   return normalized;
+}
+
+bool _hasAffinity(String declaredType, String affinity) {
+  final type = declaredType.toUpperCase();
+  return switch (affinity) {
+    'INTEGER' => type.contains('INT'),
+    'TEXT' =>
+      type.contains('CHAR') || type.contains('CLOB') || type.contains('TEXT'),
+    'BLOB' => type.isEmpty || type.contains('BLOB'),
+    'REAL' =>
+      type.contains('REAL') || type.contains('FLOA') || type.contains('DOUB'),
+    'NUMERIC' => true,
+    _ => type == affinity,
+  };
 }
 
 /// Collects column and table constraints for [DbSchema.createTable].
@@ -168,6 +339,14 @@ final class DbCreateTable {
     return _add(name, type);
   }
 
+  /// Adds a trusted table-level CHECK expression.
+  void check(String expression) {
+    if (expression.trim().isEmpty) {
+      throw ArgumentError.value(expression, 'expression', 'Cannot be empty');
+    }
+    _constraints.add('CHECK ($expression)');
+  }
+
   /// Adds a composite foreign-key constraint.
   void foreignKey(
     List<String> columns, {
@@ -200,7 +379,7 @@ final class DbCreateTable {
   }
 
   DbColumnDefinition _add(String name, String type) {
-    final column = DbColumnDefinition(name, type);
+    final column = DbColumnDefinition._(name, type);
     _columns.add(column);
     return column;
   }
@@ -209,7 +388,15 @@ final class DbCreateTable {
 /// A fluent SQLite column definition used by [DbCreateTable].
 final class DbColumnDefinition {
   /// Creates a column definition with a trusted SQLite [type].
-  DbColumnDefinition(this.name, this.type);
+  DbColumnDefinition._(this.name, this.type);
+
+  /// Creates a column with a developer-controlled trusted SQLite [type].
+  factory DbColumnDefinition.trusted(String name, String type) {
+    if (type.trim().isEmpty) {
+      throw ArgumentError.value(type, 'type', 'Column type cannot be empty');
+    }
+    return DbColumnDefinition._(name, type);
+  }
 
   final String name;
   final String type;

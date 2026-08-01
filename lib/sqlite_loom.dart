@@ -7,11 +7,13 @@
 library;
 
 export 'src/change.dart';
+export 'src/capabilities.dart';
 export 'src/cli.dart';
 export 'src/codec.dart';
 export 'src/column.dart';
 export 'src/database.dart';
 export 'src/expression.dart';
+export 'src/join.dart';
 export 'src/migration.dart';
 export 'src/query.dart';
 export 'src/row.dart';

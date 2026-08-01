@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'codec.dart';
 import 'expression.dart';
 import 'internal/sql.dart';
@@ -13,6 +16,12 @@ abstract interface class AnyDbColumn {
   /// The SQL column name.
   String get name;
 
+  /// Expected SQLite type affinity, when known.
+  String? get affinity;
+
+  /// Whether the mapped Dart type accepts a SQLite `NULL` value.
+  bool get acceptsNull;
+
   /// Encodes a dynamically typed value.
   Object? encodeAny(Object? value);
 }
@@ -20,10 +29,16 @@ abstract interface class AnyDbColumn {
 /// A named SQLite column storing values of type [T].
 final class DbColumn<T> implements AnyDbColumn {
   /// Creates a column backed by [codec].
-  const DbColumn(this.name, {required DbCodec<T> codec}) : _codec = codec;
+  const DbColumn(this.name, {required DbCodec<T> codec, this.affinity})
+    : _codec = codec;
 
   @override
   final String name;
+  @override
+  final String? affinity;
+
+  @override
+  bool get acceptsNull => null is T;
   final DbCodec<T> _codec;
 
   /// The safely quoted SQL identifier.
@@ -97,10 +112,13 @@ final class DbColumn<T> implements AnyDbColumn {
   }
 
   /// Orders this column from smallest to largest.
-  DbOrdering ascending() => DbOrdering('$sql ASC');
+  DbOrdering ascending({String? collation, bool? nullsFirst}) =>
+      DbOrdering('$sql${_collationSql(collation)} ASC${_nullsSql(nullsFirst)}');
 
   /// Orders this column from largest to smallest.
-  DbOrdering descending() => DbOrdering('$sql DESC');
+  DbOrdering descending({String? collation, bool? nullsFirst}) => DbOrdering(
+    '$sql${_collationSql(collation)} DESC${_nullsSql(nullsFirst)}',
+  );
 
   @override
   String toString() => 'DbColumn<$T>($name)';
@@ -108,7 +126,7 @@ final class DbColumn<T> implements AnyDbColumn {
 
 /// A non-nullable column with range comparison predicates.
 final class ComparableDbColumn<T> extends DbColumn<T> {
-  const ComparableDbColumn(super.name, {required super.codec});
+  const ComparableDbColumn(super.name, {required super.codec, super.affinity});
 
   DbPredicate greaterThan(T value) => DbPredicate('$sql > ?', [encode(value)]);
 
@@ -127,7 +145,11 @@ final class ComparableDbColumn<T> extends DbColumn<T> {
 
 /// A nullable column with range comparison predicates for non-null values.
 final class NullableComparableDbColumn<T> extends DbColumn<T?> {
-  const NullableComparableDbColumn(super.name, {required super.codec});
+  const NullableComparableDbColumn(
+    super.name, {
+    required super.codec,
+    super.affinity,
+  });
 
   DbPredicate greaterThan(T value) => DbPredicate('$sql > ?', [encode(value)]);
 
@@ -142,6 +164,129 @@ final class NullableComparableDbColumn<T> extends DbColumn<T?> {
   DbPredicate between(T lower, T upper) {
     return DbPredicate('$sql BETWEEN ? AND ?', [encode(lower), encode(upper)]);
   }
+}
+
+/// A text column with SQLite pattern-matching predicates.
+final class TextDbColumn extends DbColumn<String> {
+  const TextDbColumn(super.name, {required super.codec, super.affinity});
+
+  /// Matches a SQL `LIKE` pattern. Wildcards in [pattern] are preserved.
+  DbPredicate like(String pattern, {bool caseSensitive = false}) {
+    if (caseSensitive) {
+      return DbPredicate('$sql GLOB ?', [_toGlobPattern(pattern)]);
+    }
+    return DbPredicate("$sql LIKE ? ESCAPE '\\' COLLATE NOCASE", [pattern]);
+  }
+
+  DbPredicate contains(String value, {bool caseSensitive = false}) =>
+      like('%${_escapeLike(value)}%', caseSensitive: caseSensitive);
+
+  DbPredicate startsWith(String value, {bool caseSensitive = false}) =>
+      like('${_escapeLike(value)}%', caseSensitive: caseSensitive);
+
+  DbPredicate endsWith(String value, {bool caseSensitive = false}) =>
+      like('%${_escapeLike(value)}', caseSensitive: caseSensitive);
+
+  /// Uses SQLite FTS `MATCH` syntax for a virtual-table column.
+  DbPredicate matches(String query) => DbPredicate('$sql MATCH ?', [query]);
+}
+
+String _collationSql(String? collation) {
+  if (collation == null) return '';
+  final normalized = collation.trim().toUpperCase();
+  const supported = {'BINARY', 'NOCASE', 'RTRIM'};
+  if (!supported.contains(normalized)) {
+    throw ArgumentError.value(collation, 'collation', 'Unsupported collation');
+  }
+  return ' COLLATE $normalized';
+}
+
+String _nullsSql(bool? nullsFirst) => switch (nullsFirst) {
+  true => ' NULLS FIRST',
+  false => ' NULLS LAST',
+  null => '',
+};
+
+/// JSON1 predicates for JSON text columns.
+extension DbJsonPredicates on DbColumn<Object?> {
+  DbPredicate jsonEquals(String path, Object? value) {
+    return DbPredicate('json_extract($sql, ?) IS ?', [path, value]);
+  }
+
+  DbPredicate jsonTypeIs(String path, String type) {
+    return DbPredicate('json_type($sql, ?) = ?', [path, type]);
+  }
+
+  DbPredicate jsonArrayContains(String path, Object? value) {
+    return DbPredicate(
+      'EXISTS (SELECT 1 FROM json_each($sql, ?) WHERE value IS ?)',
+      [path, value],
+    );
+  }
+}
+
+/// A nullable text column with SQLite pattern-matching predicates.
+final class NullableTextDbColumn extends DbColumn<String?> {
+  const NullableTextDbColumn(
+    super.name, {
+    required super.codec,
+    super.affinity,
+  });
+
+  DbPredicate like(String pattern, {bool caseSensitive = false}) {
+    if (caseSensitive) {
+      return DbPredicate('$sql GLOB ?', [_toGlobPattern(pattern)]);
+    }
+    return DbPredicate("$sql LIKE ? ESCAPE '\\' COLLATE NOCASE", [pattern]);
+  }
+
+  DbPredicate contains(String value, {bool caseSensitive = false}) =>
+      like('%${_escapeLike(value)}%', caseSensitive: caseSensitive);
+
+  DbPredicate startsWith(String value, {bool caseSensitive = false}) =>
+      like('${_escapeLike(value)}%', caseSensitive: caseSensitive);
+
+  DbPredicate endsWith(String value, {bool caseSensitive = false}) =>
+      like('%${_escapeLike(value)}', caseSensitive: caseSensitive);
+
+  DbPredicate matches(String query) => DbPredicate('$sql MATCH ?', [query]);
+}
+
+String _escapeLike(String value) {
+  return value
+      .replaceAll(r'\', r'\\')
+      .replaceAll('%', r'\%')
+      .replaceAll('_', r'\_');
+}
+
+String _toGlobPattern(String pattern) {
+  final buffer = StringBuffer();
+  var escaped = false;
+  for (final rune in pattern.runes) {
+    final character = String.fromCharCode(rune);
+    if (escaped) {
+      buffer.write(switch (character) {
+        '*' => '[*]',
+        '?' => '[?]',
+        '[' => '[[]',
+        _ => character,
+      });
+      escaped = false;
+    } else if (character == r'\') {
+      escaped = true;
+    } else {
+      buffer.write(switch (character) {
+        '%' => '*',
+        '_' => '?',
+        '*' => '[*]',
+        '?' => '[?]',
+        '[' => '[[]',
+        _ => character,
+      });
+    }
+  }
+  if (escaped) buffer.write(r'\');
+  return buffer.toString();
 }
 
 DbCodec<bool> _boolCodec(String name) {
@@ -238,17 +383,25 @@ DbCodec<String> _stringCodec(String name) {
 
 /// Creates a non-nullable boolean column.
 DbColumn<bool> boolean(String name) {
-  return DbColumn<bool>(name, codec: _boolCodec(name));
+  return DbColumn<bool>(name, codec: _boolCodec(name), affinity: 'INTEGER');
 }
 
 /// Creates a nullable boolean column.
 DbColumn<bool?> nullableBoolean(String name) {
-  return DbColumn<bool?>(name, codec: nullableCodec(_boolCodec(name)));
+  return DbColumn<bool?>(
+    name,
+    codec: nullableCodec(_boolCodec(name)),
+    affinity: 'INTEGER',
+  );
 }
 
 /// Creates a non-nullable date-time column stored as UTC milliseconds.
 ComparableDbColumn<DateTime> dateTime(String name) {
-  return ComparableDbColumn<DateTime>(name, codec: _dateTimeCodec(name));
+  return ComparableDbColumn<DateTime>(
+    name,
+    codec: _dateTimeCodec(name),
+    affinity: 'INTEGER',
+  );
 }
 
 /// Creates a nullable date-time column stored as UTC milliseconds.
@@ -256,12 +409,17 @@ NullableComparableDbColumn<DateTime> nullableDateTime(String name) {
   return NullableComparableDbColumn<DateTime>(
     name,
     codec: nullableCodec(_dateTimeCodec(name)),
+    affinity: 'INTEGER',
   );
 }
 
 /// Creates a non-nullable floating-point column.
 ComparableDbColumn<double> real(String name) {
-  return ComparableDbColumn<double>(name, codec: _doubleCodec(name));
+  return ComparableDbColumn<double>(
+    name,
+    codec: _doubleCodec(name),
+    affinity: 'REAL',
+  );
 }
 
 /// Creates a nullable floating-point column.
@@ -269,12 +427,17 @@ NullableComparableDbColumn<double> nullableReal(String name) {
   return NullableComparableDbColumn<double>(
     name,
     codec: nullableCodec(_doubleCodec(name)),
+    affinity: 'REAL',
   );
 }
 
 /// Creates a non-nullable integer column.
 ComparableDbColumn<int> integer(String name) {
-  return ComparableDbColumn<int>(name, codec: _intCodec(name));
+  return ComparableDbColumn<int>(
+    name,
+    codec: _intCodec(name),
+    affinity: 'INTEGER',
+  );
 }
 
 /// Creates a nullable integer column.
@@ -282,6 +445,7 @@ NullableComparableDbColumn<int> nullableInteger(String name) {
   return NullableComparableDbColumn<int>(
     name,
     codec: nullableCodec(_intCodec(name)),
+    affinity: 'INTEGER',
   );
 }
 
@@ -290,18 +454,76 @@ DbColumn<Object?> jsonValue(String name) {
   return DbColumn<Object?>(
     name,
     codec: DbCodec<Object?>(
-      encode: identityEncode<Object?>,
-      decode: (value) => value,
+      encode: jsonEncode,
+      decode: (value) => value is String ? jsonDecode(value) : value,
     ),
+    affinity: 'TEXT',
+  );
+}
+
+/// Creates a nullable column containing arbitrary JSON encoded as text.
+DbColumn<Object?> nullableJsonValue(String name) {
+  return DbColumn<Object?>(
+    name,
+    codec: DbCodec<Object?>(
+      encode: (value) => value == null ? null : jsonEncode(value),
+      decode: (value) => value is String ? jsonDecode(value) : value,
+    ),
+    affinity: 'TEXT',
+  );
+}
+
+/// Creates a typed JSON column encoded as text.
+DbColumn<T> json<T>(
+  String name, {
+  required JsonEncoder<T> encode,
+  required JsonDecoder<T> decode,
+}) {
+  return DbColumn<T>(
+    name,
+    codec: DbCodec<T>(
+      encode: (value) => jsonEncode(encode(value)),
+      decode: (value) => decode(jsonDecode(value! as String)),
+    ),
+    affinity: 'TEXT',
+  );
+}
+
+/// Creates a binary SQLite BLOB column.
+DbColumn<Uint8List> blob(String name) {
+  return DbColumn<Uint8List>(
+    name,
+    codec: DbCodec<Uint8List>(
+      encode: identityEncode<Uint8List>,
+      decode: (value) {
+        if (value is Uint8List) return value;
+        if (value is List<int>) return Uint8List.fromList(value);
+        throw StateError('Column $name expected binary data');
+      },
+    ),
+    affinity: 'BLOB',
+  );
+}
+
+/// Creates a nullable binary SQLite BLOB column.
+DbColumn<Uint8List?> nullableBlob(String name) {
+  return DbColumn<Uint8List?>(
+    name,
+    codec: nullableCodec(blob(name)._codec),
+    affinity: 'BLOB',
   );
 }
 
 /// Creates a non-nullable text column.
-DbColumn<String> text(String name) {
-  return DbColumn<String>(name, codec: _stringCodec(name));
+TextDbColumn text(String name) {
+  return TextDbColumn(name, codec: _stringCodec(name), affinity: 'TEXT');
 }
 
 /// Creates a nullable text column.
-DbColumn<String?> nullableText(String name) {
-  return DbColumn<String?>(name, codec: nullableCodec(_stringCodec(name)));
+NullableTextDbColumn nullableText(String name) {
+  return NullableTextDbColumn(
+    name,
+    codec: nullableCodec(_stringCodec(name)),
+    affinity: 'TEXT',
+  );
 }

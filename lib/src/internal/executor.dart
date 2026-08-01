@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:sqflite_common/sqlite_api.dart';
 
 import '../change.dart';
+import '../capabilities.dart';
 import '../table.dart';
 
 abstract interface class DbExecutorAdapter {
@@ -11,6 +12,13 @@ abstract interface class DbExecutorAdapter {
   bool get canWatch;
 
   Stream<DbChangeSet> get changes;
+
+  Future<DbCapabilities> capabilities();
+
+  Future<List<Object?>> commitBatch(
+    void Function(Batch batch) build, {
+    required bool noResult,
+  });
 
   Future<int> delete(String table, {String? where, List<Object?>? whereArgs});
 
@@ -32,6 +40,13 @@ abstract interface class DbExecutorAdapter {
     int? limit,
     int? offset,
   });
+
+  Future<List<Map<String, Object?>>> rawQuery(
+    String sql, [
+    List<Object?>? arguments,
+  ]);
+
+  Future<int> rawInsert(String sql, [List<Object?>? arguments]);
 
   Future<int> update(
     String table,

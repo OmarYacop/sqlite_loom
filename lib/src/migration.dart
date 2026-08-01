@@ -18,6 +18,9 @@ abstract class DbMigration {
   /// A stable descriptive name.
   String get name;
 
+  /// Optional stable checksum used to detect edited released migrations.
+  String? get checksum => null;
+
   /// Applies this migration.
   FutureOr<void> up(DatabaseExecutor db);
 
@@ -39,6 +42,7 @@ final class CallbackDbMigration extends DbMigration {
     required this.name,
     required DbMigrationCallback up,
     DbMigrationCallback? down,
+    this.checksum,
   }) : _up = up,
        _down = down;
 
@@ -47,6 +51,9 @@ final class CallbackDbMigration extends DbMigration {
 
   @override
   final String name;
+
+  @override
+  final String? checksum;
 
   final DbMigrationCallback _up;
   final DbMigrationCallback? _down;
@@ -72,12 +79,14 @@ final class DbAppliedMigration {
     required this.name,
     required this.batch,
     required this.appliedAt,
+    this.checksum,
   });
 
   final int version;
   final String name;
   final int batch;
   final DateTime appliedAt;
+  final String? checksum;
 }
 
 /// Joins a code-defined migration with its stored application record.
@@ -146,29 +155,49 @@ final class SqliteLoomMigrator {
     this.database, {
     required Iterable<DbMigration> migrations,
     String migrationTable = '_sqlite_loom_migrations',
+    int busyRetryAttempts = 3,
+    Duration busyRetryDelay = const Duration(milliseconds: 25),
   }) : _migrationTable = migrationTable,
-       _migrations = _validateMigrations(migrations);
+       _migrations = _validateMigrations(migrations),
+       _busyRetryAttempts = busyRetryAttempts,
+       _busyRetryDelay = busyRetryDelay {
+    if (busyRetryAttempts < 0) {
+      throw ArgumentError.value(
+        busyRetryAttempts,
+        'busyRetryAttempts',
+        'Cannot be negative',
+      );
+    }
+    if (busyRetryDelay.isNegative) {
+      throw ArgumentError.value(
+        busyRetryDelay,
+        'busyRetryDelay',
+        'Cannot be negative',
+      );
+    }
+  }
 
   final Database database;
   final String _migrationTable;
   final List<DbMigration> _migrations;
+  final int _busyRetryAttempts;
+  final Duration _busyRetryDelay;
 
   /// Applies pending migrations, optionally only through [through].
   Future<DbMigrationResult> migrate({int? through}) async {
     await _ensureMigrationTable();
-    final applied = await _appliedByVersion();
-    _throwIfAppliedMigrationIsMissing(applied.values);
-    final pending = _migrations
-        .where((migration) => !applied.containsKey(migration.version))
-        .where((migration) => through == null || migration.version <= through)
-        .toList(growable: false);
-    if (pending.isEmpty) {
-      return const DbMigrationResult(applied: []);
-    }
-    final batch = await _nextBatch();
-    final now = DateTime.now().toUtc().toIso8601String();
-
-    await database.transaction<void>((txn) async {
+    var migrated = const <DbMigration>[];
+    Future<void> applyPending() => database.transaction<void>((txn) async {
+      final applied = await _appliedByVersion(txn);
+      _throwIfAppliedMigrationIsMissing(applied.values);
+      _throwIfAppliedMigrationChanged(applied.values);
+      final pending = _migrations
+          .where((migration) => !applied.containsKey(migration.version))
+          .where((migration) => through == null || migration.version <= through)
+          .toList(growable: false);
+      if (pending.isEmpty) return;
+      final batch = await _nextBatch(txn);
+      final now = DateTime.now().toUtc().toIso8601String();
       for (final migration in pending) {
         await migration.up(txn);
         await txn.insert(_migrationTable, {
@@ -176,11 +205,22 @@ final class SqliteLoomMigrator {
           'name': migration.name,
           'batch': batch,
           'applied_at': now,
+          'checksum': migration.checksum,
         });
       }
+      migrated = pending;
     });
+    for (var attempt = 0; ; attempt += 1) {
+      try {
+        await applyPending();
+        break;
+      } catch (error) {
+        if (!_isSqliteBusy(error) || attempt >= _busyRetryAttempts) rethrow;
+        await Future<void>.delayed(_busyRetryDelay * (attempt + 1));
+      }
+    }
 
-    return DbMigrationResult(applied: pending);
+    return DbMigrationResult(applied: migrated);
   }
 
   /// Drops every user table and reapplies all migrations.
@@ -231,6 +271,7 @@ final class SqliteLoomMigrator {
     await _ensureMigrationTable();
     final applied = await _appliedMigrations();
     _throwIfAppliedMigrationIsMissing(applied);
+    _throwIfAppliedMigrationChanged(applied);
     if (applied.isEmpty) {
       return const DbRollbackResult(rolledBack: []);
     }
@@ -291,15 +332,19 @@ final class SqliteLoomMigrator {
     ];
   }
 
-  Future<Map<int, DbAppliedMigration>> _appliedByVersion() async {
+  Future<Map<int, DbAppliedMigration>> _appliedByVersion([
+    DatabaseExecutor? executor,
+  ]) async {
     return {
-      for (final migration in await _appliedMigrations())
+      for (final migration in await _appliedMigrations(executor))
         migration.version: migration,
     };
   }
 
-  Future<List<DbAppliedMigration>> _appliedMigrations() async {
-    final rows = await database.query(
+  Future<List<DbAppliedMigration>> _appliedMigrations([
+    DatabaseExecutor? executor,
+  ]) async {
+    final rows = await (executor ?? database).query(
       _migrationTable,
       orderBy: 'batch ASC, version ASC',
     );
@@ -312,22 +357,32 @@ final class SqliteLoomMigrator {
       name: row['name']! as String,
       batch: row['batch']! as int,
       appliedAt: DateTime.parse(row['applied_at']! as String),
+      checksum: row['checksum'] as String?,
     );
   }
 
-  Future<void> _ensureMigrationTable() {
-    return database.execute(
+  Future<void> _ensureMigrationTable() async {
+    await database.execute(
       'CREATE TABLE IF NOT EXISTS ${quoteIdentifier(_migrationTable)} ('
       'version INTEGER PRIMARY KEY, '
       'name TEXT NOT NULL, '
       'batch INTEGER NOT NULL, '
-      'applied_at TEXT NOT NULL'
+      'applied_at TEXT NOT NULL, '
+      'checksum TEXT'
       ')',
     );
+    final columns = await database.rawQuery(
+      'PRAGMA table_info(${quoteIdentifier(_migrationTable)})',
+    );
+    if (!columns.any((column) => column['name'] == 'checksum')) {
+      await database.execute(
+        'ALTER TABLE ${quoteIdentifier(_migrationTable)} ADD COLUMN checksum TEXT',
+      );
+    }
   }
 
-  Future<int> _nextBatch() async {
-    final rows = await database.rawQuery(
+  Future<int> _nextBatch([DatabaseExecutor? executor]) async {
+    final rows = await (executor ?? database).rawQuery(
       'SELECT MAX(batch) AS batch FROM ${quoteIdentifier(_migrationTable)}',
     );
     final batch = rows.first['batch'];
@@ -350,12 +405,34 @@ final class SqliteLoomMigrator {
     }
   }
 
+  void _throwIfAppliedMigrationChanged(Iterable<DbAppliedMigration> applied) {
+    final migrationsByVersion = {
+      for (final migration in _migrations) migration.version: migration,
+    };
+    final changed = applied
+        .where((record) {
+          final expected = migrationsByVersion[record.version]?.checksum;
+          return record.checksum != null && record.checksum != expected;
+        })
+        .toList(growable: false);
+    if (changed.isNotEmpty) {
+      final versions = changed.map((record) => record.version).join(', ');
+      throw StateError('Applied migration checksums changed: $versions');
+    }
+  }
+
   Future<List<String>> _userTables() async {
     final rows = await database.rawQuery(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
     );
     return rows.map((row) => row['name']! as String).toList(growable: false);
   }
+}
+
+bool _isSqliteBusy(Object error) {
+  if (error is! DatabaseException) return false;
+  final code = error.getResultCode();
+  return code != null && (code & 0xff) == 5;
 }
 
 List<DbMigration> _validateMigrations(Iterable<DbMigration> migrations) {

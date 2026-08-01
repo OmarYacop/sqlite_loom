@@ -28,5 +28,5 @@ final class DbValues {
   bool get isNotEmpty => _values.isNotEmpty;
 
   @override
-  String toString() => _values.toString();
+  String toString() => 'DbValues(columns: ${_values.keys.toList()})';
 }

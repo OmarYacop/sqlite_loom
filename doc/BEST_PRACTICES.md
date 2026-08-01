@@ -21,15 +21,28 @@
 - Omit an auto-increment key from `DbValues` until SQLite assigns it.
 - Centralize each table instance behind a database extension or repository.
 - Prefer typed column predicates to hand-written SQL.
+- Keep `DbSqlLiteral`, `DbPredicate.trusted`, `DbOrdering.trusted`, and
+  `DbColumnDefinition.trusted` SQL arguments entirely developer-authored. Never
+  build them from user, server, or configuration values.
 
 ## Queries and writes
 
 - Add deterministic ordering before using `limit` or `offset`.
 - Keep pagination queries short-lived; use keyset pagination for large tables.
+- Use `after`/`before` keyset cursors instead of large offsets.
+- Use `pluck(column)` or `select([column1, column2, ...])` when a read does not
+  need a complete model.
+- Use `insertAll` and `upsertAll` so bulk writes execute as SQLite batches.
+- Set `batchSize` for very large inputs and wrap chunks in a transaction when
+  the entire operation must be atomic.
+- Add stable migration checksums before releasing migrations.
+- Override `DbTable.columns` and validate the live schema in integration tests.
 - Use a transaction for multi-step invariants.
 - Remember that `allRows()` is an explicit safety escape hatch, not a default.
 - Include all affected tables when using `rawWrite`, including tables changed by
   triggers when their live queries must refresh.
+- Inspect `await db.capabilities()` when an application needs optional SQLite
+  behavior across different platform builds.
 
 ## Reactive queries
 
