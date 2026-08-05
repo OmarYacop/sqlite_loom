@@ -2,9 +2,9 @@ import 'dart:async';
 
 import 'package:sqflite_common/sqlite_api.dart';
 
-import '../change.dart';
-import '../capabilities.dart';
-import '../table.dart';
+import '../database/capabilities.dart';
+import '../model/table.dart';
+import '../query/change.dart';
 
 abstract interface class DbExecutorAdapter {
   DatabaseExecutor get executor;

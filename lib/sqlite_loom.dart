@@ -6,17 +6,19 @@
 /// live queries.
 library;
 
-export 'src/change.dart';
-export 'src/capabilities.dart';
-export 'src/cli.dart';
-export 'src/codec.dart';
-export 'src/column.dart';
-export 'src/database.dart';
-export 'src/expression.dart';
-export 'src/join.dart';
-export 'src/migration.dart';
-export 'src/query.dart';
-export 'src/row.dart';
-export 'src/schema.dart';
-export 'src/table.dart';
-export 'src/values.dart';
+export 'package:sqflite_common/sqlite_api.dart' show Database, DatabaseExecutor;
+
+export 'src/query/change.dart';
+export 'src/database/capabilities.dart';
+export 'src/cli/runtime_cli.dart';
+export 'src/model/codec.dart';
+export 'src/model/column.dart';
+export 'src/database/database.dart';
+export 'src/model/expression.dart';
+export 'src/query/join.dart';
+export 'src/migration/migration.dart';
+export 'src/query/query.dart';
+export 'src/model/row.dart';
+export 'src/migration/schema.dart';
+export 'src/model/table.dart';
+export 'src/model/values.dart';

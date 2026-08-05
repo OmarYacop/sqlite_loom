@@ -1,8 +1,6 @@
 /// Lightweight helpers for SQLite Loom integration tests.
 library;
 
-import 'package:sqflite_common/sqlite_api.dart';
-
 import 'sqlite_loom.dart';
 
 final class SqliteLoomTestHarness {

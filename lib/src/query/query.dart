@@ -2,15 +2,15 @@ import 'dart:async';
 
 import 'package:sqflite_common/sqlite_api.dart';
 
+import '../database/capabilities.dart';
+import '../internal/executor.dart';
+import '../internal/sql.dart';
+import '../model/column.dart';
+import '../model/expression.dart';
+import '../model/row.dart';
+import '../model/table.dart';
+import '../model/values.dart';
 import 'change.dart';
-import 'capabilities.dart';
-import 'column.dart';
-import 'expression.dart';
-import 'internal/executor.dart';
-import 'internal/sql.dart';
-import 'row.dart';
-import 'table.dart';
-import 'values.dart';
 
 /// Compares two live-query result lists for semantic equality.
 typedef DbListEquals<Row> = bool Function(List<Row> left, List<Row> right);

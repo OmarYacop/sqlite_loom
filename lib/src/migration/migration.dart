@@ -2,10 +2,142 @@ import 'dart:async';
 
 import 'package:sqflite_common/sqlite_api.dart';
 
-import 'internal/sql.dart';
+import '../internal/sql.dart';
+import 'schema.dart';
 
-/// Applies or reverses one migration using [db].
-typedef DbMigrationCallback = FutureOr<void> Function(DatabaseExecutor db);
+/// Applies or reverses one migration using [migration].
+typedef DbMigrationCallback =
+    FutureOr<void> Function(DbMigrationContext migration);
+
+/// Transaction-bound helpers available while a migration is running.
+final class DbMigrationContext implements DatabaseExecutor {
+  DbMigrationContext._(this.executor) : schema = DbSchema(executor);
+
+  /// The exact executor owned by the migrator, normally a transaction.
+  final DatabaseExecutor executor;
+
+  /// Type-safe schema operations bound to [executor].
+  final DbSchema schema;
+
+  @override
+  Future<void> execute(String sql, [List<Object?>? arguments]) =>
+      executor.execute(sql, arguments);
+
+  @override
+  Future<List<Map<String, Object?>>> rawQuery(
+    String sql, [
+    List<Object?>? arguments,
+  ]) => executor.rawQuery(sql, arguments);
+
+  @override
+  Future<List<Map<String, Object?>>> query(
+    String table, {
+    bool? distinct,
+    List<String>? columns,
+    String? where,
+    List<Object?>? whereArgs,
+    String? groupBy,
+    String? having,
+    String? orderBy,
+    int? limit,
+    int? offset,
+  }) => executor.query(
+    table,
+    distinct: distinct,
+    columns: columns,
+    where: where,
+    whereArgs: whereArgs,
+    groupBy: groupBy,
+    having: having,
+    orderBy: orderBy,
+    limit: limit,
+    offset: offset,
+  );
+
+  @override
+  Future<int> insert(
+    String table,
+    Map<String, Object?> values, {
+    String? nullColumnHack,
+    ConflictAlgorithm? conflictAlgorithm,
+  }) => executor.insert(
+    table,
+    values,
+    nullColumnHack: nullColumnHack,
+    conflictAlgorithm: conflictAlgorithm,
+  );
+
+  @override
+  Future<int> update(
+    String table,
+    Map<String, Object?> values, {
+    String? where,
+    List<Object?>? whereArgs,
+    ConflictAlgorithm? conflictAlgorithm,
+  }) => executor.update(
+    table,
+    values,
+    where: where,
+    whereArgs: whereArgs,
+    conflictAlgorithm: conflictAlgorithm,
+  );
+
+  @override
+  Future<int> delete(String table, {String? where, List<Object?>? whereArgs}) =>
+      executor.delete(table, where: where, whereArgs: whereArgs);
+
+  @override
+  Future<int> rawInsert(String sql, [List<Object?>? arguments]) =>
+      executor.rawInsert(sql, arguments);
+
+  @override
+  Future<int> rawUpdate(String sql, [List<Object?>? arguments]) =>
+      executor.rawUpdate(sql, arguments);
+
+  @override
+  Future<int> rawDelete(String sql, [List<Object?>? arguments]) =>
+      executor.rawDelete(sql, arguments);
+
+  @override
+  Future<QueryCursor> rawQueryCursor(
+    String sql,
+    List<Object?>? arguments, {
+    int? bufferSize,
+  }) => executor.rawQueryCursor(sql, arguments, bufferSize: bufferSize);
+
+  @override
+  Future<QueryCursor> queryCursor(
+    String table, {
+    bool? distinct,
+    List<String>? columns,
+    String? where,
+    List<Object?>? whereArgs,
+    String? groupBy,
+    String? having,
+    String? orderBy,
+    int? limit,
+    int? offset,
+    int? bufferSize,
+  }) => executor.queryCursor(
+    table,
+    distinct: distinct,
+    columns: columns,
+    where: where,
+    whereArgs: whereArgs,
+    groupBy: groupBy,
+    having: having,
+    orderBy: orderBy,
+    limit: limit,
+    offset: offset,
+    bufferSize: bufferSize,
+  );
+
+  @override
+  Batch batch() => executor.batch();
+
+  @override
+  Database get database => executor.database;
+}
 
 /// A versioned, ordered database schema change.
 abstract class DbMigration {
@@ -22,12 +154,12 @@ abstract class DbMigration {
   String? get checksum => null;
 
   /// Applies this migration.
-  FutureOr<void> up(DatabaseExecutor db);
+  FutureOr<void> up(DbMigrationContext migration);
 
   /// Reverses this migration.
   ///
   /// The default throws because rollback must never be assumed safe.
-  FutureOr<void> down(DatabaseExecutor db) {
+  FutureOr<void> down(DbMigrationContext migration) {
     throw UnsupportedError(
       'Migration $version $name does not support rollback',
     );
@@ -59,16 +191,81 @@ final class CallbackDbMigration extends DbMigration {
   final DbMigrationCallback? _down;
 
   @override
-  FutureOr<void> up(DatabaseExecutor db) => _up(db);
+  FutureOr<void> up(DbMigrationContext migration) => _up(migration);
 
   @override
-  FutureOr<void> down(DatabaseExecutor db) {
+  FutureOr<void> down(DbMigrationContext migration) {
     final callback = _down;
     if (callback == null) {
-      return super.down(db);
+      return super.down(migration);
     }
-    return callback(db);
+    return callback(migration);
   }
+}
+
+/// Adds source-integrity metadata to an application migration.
+///
+/// Retained for source compatibility. Generated projects now use
+/// [SqliteLoomProject] and do not expose checksum wrappers to application code.
+final class ChecksummedDbMigration extends DbMigration {
+  const ChecksummedDbMigration(this.migration, {required this.checksum});
+
+  /// The application-authored migration.
+  final DbMigration migration;
+
+  @override
+  int get version => migration.version;
+
+  @override
+  String get name => migration.name;
+
+  @override
+  final String checksum;
+
+  @override
+  FutureOr<void> up(DbMigrationContext migration) =>
+      this.migration.up(migration);
+
+  @override
+  FutureOr<void> down(DbMigrationContext migration) =>
+      this.migration.down(migration);
+}
+
+/// An application-level collection of migrations.
+final class SqliteLoomProject {
+  /// Creates a project from its ordered, application-readable migrations.
+  const SqliteLoomProject(
+    this.migrations, {
+    this.retiredVersions = const <int>{},
+  });
+
+  /// Migrations belonging to the application.
+  final List<DbMigration> migrations;
+
+  /// Historical versions accepted in existing databases but never applied to
+  /// new databases.
+  final Set<int> retiredVersions;
+
+  /// Highest schema version declared by this project, or zero when empty.
+  int get latestMigrationVersion => migrations.fold(
+    retiredVersions.fold(
+      0,
+      (latest, version) => version > latest ? version : latest,
+    ),
+    (latest, migration) =>
+        migration.version > latest ? migration.version : latest,
+  );
+
+  /// Creates a migrator for [database].
+  SqliteLoomMigrator migrator(Database database) => SqliteLoomMigrator(
+    database,
+    migrations: migrations,
+    retiredVersions: retiredVersions,
+  );
+
+  /// Applies pending project migrations.
+  Future<DbMigrationResult> migrate(Database database, {int? through}) =>
+      migrator(database).migrate(through: through);
 }
 
 /// A migration record read from the migration tracking table.
@@ -96,6 +293,7 @@ final class DbMigrationStatus {
     required this.name,
     required this.migration,
     required this.applied,
+    required this.isRetired,
   });
 
   final int version;
@@ -103,11 +301,14 @@ final class DbMigrationStatus {
   final DbMigration? migration;
   final DbAppliedMigration? applied;
 
+  /// Whether this version was intentionally consolidated or retired.
+  final bool isRetired;
+
   /// Whether this version has been applied.
   bool get isApplied => applied != null;
 
   /// Whether the database contains a version missing from application code.
-  bool get isMissing => migration == null;
+  bool get isMissing => migration == null && !isRetired;
 }
 
 /// The result of applying pending migrations.
@@ -154,11 +355,13 @@ final class SqliteLoomMigrator {
   SqliteLoomMigrator(
     this.database, {
     required Iterable<DbMigration> migrations,
+    Set<int> retiredVersions = const <int>{},
     String migrationTable = '_sqlite_loom_migrations',
     int busyRetryAttempts = 3,
     Duration busyRetryDelay = const Duration(milliseconds: 25),
   }) : _migrationTable = migrationTable,
        _migrations = _validateMigrations(migrations),
+       _retiredVersions = Set.unmodifiable(retiredVersions),
        _busyRetryAttempts = busyRetryAttempts,
        _busyRetryDelay = busyRetryDelay {
     if (busyRetryAttempts < 0) {
@@ -175,11 +378,21 @@ final class SqliteLoomMigrator {
         'Cannot be negative',
       );
     }
+    final activeVersions = _migrations.map((migration) => migration.version);
+    if (_retiredVersions.any((version) => version <= 0) ||
+        activeVersions.any(_retiredVersions.contains)) {
+      throw ArgumentError.value(
+        retiredVersions,
+        'retiredVersions',
+        'Must be positive and cannot overlap active migrations',
+      );
+    }
   }
 
   final Database database;
   final String _migrationTable;
   final List<DbMigration> _migrations;
+  final Set<int> _retiredVersions;
   final int _busyRetryAttempts;
   final Duration _busyRetryDelay;
 
@@ -199,7 +412,7 @@ final class SqliteLoomMigrator {
       final batch = await _nextBatch(txn);
       final now = DateTime.now().toUtc().toIso8601String();
       for (final migration in pending) {
-        await migration.up(txn);
+        await migration.up(DbMigrationContext._(txn));
         await txn.insert(_migrationTable, {
           'version': migration.version,
           'name': migration.name,
@@ -231,6 +444,8 @@ final class SqliteLoomMigrator {
       throw StateError('fresh() is destructive. Pass allowDestructive: true.');
     }
     final tables = await _userTables();
+    final foreignKeys = await database.rawQuery('PRAGMA foreign_keys');
+    final foreignKeysWereEnabled = foreignKeys.single.values.first == 1;
     await database.execute('PRAGMA foreign_keys = OFF');
     try {
       await database.transaction<void>((txn) async {
@@ -239,7 +454,9 @@ final class SqliteLoomMigrator {
         }
       });
     } finally {
-      await database.execute('PRAGMA foreign_keys = ON');
+      await database.execute(
+        'PRAGMA foreign_keys = ${foreignKeysWereEnabled ? 'ON' : 'OFF'}',
+      );
     }
     final migration = await migrate();
     return DbFreshResult(droppedTables: tables, migration: migration);
@@ -296,7 +513,7 @@ final class SqliteLoomMigrator {
     await database.transaction<void>((txn) async {
       for (final record in toRollback) {
         final migration = migrationsByVersion[record.version]!;
-        await migration.down(txn);
+        await migration.down(DbMigrationContext._(txn));
         await txn.delete(
           _migrationTable,
           where: 'version = ?',
@@ -319,15 +536,20 @@ final class SqliteLoomMigrator {
     final versions = <int>{
       ...applied.keys,
       ...migrationsByVersion.keys,
+      ..._retiredVersions,
     }.toList(growable: false)..sort();
 
     return [
       for (final version in versions)
         DbMigrationStatus(
           version: version,
-          name: migrationsByVersion[version]?.name ?? applied[version]!.name,
+          name:
+              migrationsByVersion[version]?.name ??
+              applied[version]?.name ??
+              'retired_$version',
           migration: migrationsByVersion[version],
           applied: applied[version],
+          isRetired: _retiredVersions.contains(version),
         ),
     ];
   }
@@ -393,9 +615,9 @@ final class SqliteLoomMigrator {
   }
 
   void _throwIfAppliedMigrationIsMissing(Iterable<DbAppliedMigration> applied) {
-    final knownVersions = _migrations
-        .map((migration) => migration.version)
-        .toSet();
+    final knownVersions =
+        _migrations.map((migration) => migration.version).toSet()
+          ..addAll(_retiredVersions);
     final missing = applied
         .where((record) => !knownVersions.contains(record.version))
         .toList(growable: false);
@@ -412,7 +634,9 @@ final class SqliteLoomMigrator {
     final changed = applied
         .where((record) {
           final expected = migrationsByVersion[record.version]?.checksum;
-          return record.checksum != null && record.checksum != expected;
+          return expected != null &&
+              record.checksum != null &&
+              record.checksum != expected;
         })
         .toList(growable: false);
     if (changed.isNotEmpty) {

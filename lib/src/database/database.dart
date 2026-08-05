@@ -1,14 +1,16 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:path/path.dart' as p;
 import 'package:sqflite_common/sqlite_api.dart';
 
-import 'change.dart';
 import 'capabilities.dart';
-import 'internal/executor.dart';
-import 'internal/sql.dart';
-import 'query.dart';
-import 'table.dart';
+import '../internal/executor.dart';
+import '../internal/sql.dart';
+import '../migration/migration.dart';
+import '../model/table.dart';
+import '../query/change.dart';
+import '../query/query.dart';
 
 /// Adds typed queries, transactions, and reactive invalidation to a database.
 ///
@@ -45,6 +47,63 @@ typedef DbObserver = void Function(DbObservation observation);
 typedef DbObserverErrorHandler =
     void Function(Object error, StackTrace stackTrace);
 
+/// Resolves an application database file path.
+typedef DbPathResolver = FutureOr<String> Function();
+
+/// Resolves the active platform database factory lazily.
+typedef DbFactoryResolver = DatabaseFactory Function();
+
+/// Connection policy applied before migrations run.
+final class DbConnectionOptions {
+  const DbConnectionOptions({
+    this.foreignKeys = true,
+    this.writeAheadLogging,
+    this.busyTimeout,
+    this.synchronous,
+  });
+
+  final bool foreignKeys;
+  final bool? writeAheadLogging;
+  final Duration? busyTimeout;
+  final DbSynchronous? synchronous;
+}
+
+/// Applies SQLite Loom's common settings to an open connection.
+///
+/// Call this immediately after opening a database and before starting a
+/// transaction or running migrations.
+Future<void> configureSqliteLoomConnection(
+  DatabaseExecutor database, {
+  bool foreignKeys = true,
+  bool? writeAheadLogging,
+  Duration? busyTimeout,
+  DbSynchronous? synchronous,
+}) async {
+  await database.rawQuery(
+    'PRAGMA foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}',
+  );
+  if (writeAheadLogging != null) {
+    await database.rawQuery(
+      'PRAGMA journal_mode = ${writeAheadLogging ? 'WAL' : 'DELETE'}',
+    );
+  }
+  if (busyTimeout != null) {
+    if (busyTimeout.isNegative) {
+      throw ArgumentError.value(
+        busyTimeout,
+        'busyTimeout',
+        'Cannot be negative',
+      );
+    }
+    await database.rawQuery(
+      'PRAGMA busy_timeout = ${busyTimeout.inMilliseconds}',
+    );
+  }
+  if (synchronous != null) {
+    await database.rawQuery('PRAGMA synchronous = ${synchronous.sql}');
+  }
+}
+
 final class SqliteLoom {
   /// Wraps an open [Database].
   SqliteLoom(
@@ -76,31 +135,13 @@ final class SqliteLoom {
     Duration? busyTimeout,
     DbSynchronous? synchronous,
   }) async {
-    if (foreignKeys != null) {
-      await _root.execute(
-        'PRAGMA foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}',
-      );
-    }
-    if (writeAheadLogging != null) {
-      await _root.rawQuery(
-        'PRAGMA journal_mode = ${writeAheadLogging ? 'WAL' : 'DELETE'}',
-      );
-    }
-    if (busyTimeout != null) {
-      if (busyTimeout.isNegative) {
-        throw ArgumentError.value(
-          busyTimeout,
-          'busyTimeout',
-          'Cannot be negative',
-        );
-      }
-      await _root.execute(
-        'PRAGMA busy_timeout = ${busyTimeout.inMilliseconds}',
-      );
-    }
-    if (synchronous != null) {
-      await _root.execute('PRAGMA synchronous = ${synchronous.sql}');
-    }
+    await configureSqliteLoomConnection(
+      _root.database,
+      foreignKeys: foreignKeys ?? true,
+      writeAheadLogging: writeAheadLogging,
+      busyTimeout: busyTimeout,
+      synchronous: synchronous,
+    );
   }
 
   /// Runs SQLite's integrity checker and returns every diagnostic line.
@@ -185,6 +226,215 @@ final class SqliteLoom {
   Future<void> _close() async {
     await _root.dispose();
     await _root.database.close();
+  }
+}
+
+/// Application initialization helpers for a migration project.
+extension SqliteLoomProjectInitialization on SqliteLoomProject {
+  /// Configures [database], applies pending migrations, and returns its Loom
+  /// wrapper ready for repositories and queries.
+  Future<SqliteLoom> initialize(
+    Database database, {
+    bool foreignKeys = true,
+    bool? writeAheadLogging,
+    Duration? busyTimeout,
+    DbSynchronous? synchronous,
+    DbObserver? observer,
+    DbObserverErrorHandler? onObserverError,
+  }) async {
+    await configureSqliteLoomConnection(
+      database,
+      foreignKeys: foreignKeys,
+      writeAheadLogging: writeAheadLogging,
+      busyTimeout: busyTimeout,
+      synchronous: synchronous,
+    );
+    await migrate(database);
+    return SqliteLoom(
+      database,
+      observer: observer,
+      onObserverError: onObserverError,
+    );
+  }
+
+  /// Creates a package-owned database lifecycle from application settings.
+  SqliteLoomDatabase database({
+    DatabaseFactory? factory,
+    DbFactoryResolver? factoryResolver,
+    String? name,
+    String? path,
+    DbPathResolver? pathResolver,
+    DbConnectionOptions connection = const DbConnectionOptions(),
+    DbObserver? observer,
+    DbObserverErrorHandler? onObserverError,
+  }) => SqliteLoomDatabase._(
+    project: this,
+    factory: factory,
+    factoryResolver: factoryResolver,
+    name: name,
+    path: path,
+    pathResolver: pathResolver,
+    connection: connection,
+    observer: observer,
+    onObserverError: onObserverError,
+  );
+}
+
+/// Owns opening, configuring, migrating, accessing, and closing one database.
+final class SqliteLoomDatabase {
+  SqliteLoomDatabase._({
+    required SqliteLoomProject project,
+    required DatabaseFactory? factory,
+    required DbFactoryResolver? factoryResolver,
+    required String? name,
+    required String? path,
+    required DbPathResolver? pathResolver,
+    required DbConnectionOptions connection,
+    required DbObserver? observer,
+    required DbObserverErrorHandler? onObserverError,
+  }) : _project = project,
+       _factory = factory,
+       _factoryResolver = factoryResolver,
+       _name = name,
+       _path = path,
+       _pathResolver = pathResolver,
+       _connection = connection,
+       _observer = observer,
+       _onObserverError = onObserverError {
+    if ((factory == null) == (factoryResolver == null)) {
+      throw ArgumentError('Provide exactly one of factory or factoryResolver');
+    }
+    final choices = [name, path, pathResolver].where((value) => value != null);
+    if (choices.length != 1) {
+      throw ArgumentError('Provide exactly one of name, path, or pathResolver');
+    }
+    if (name != null &&
+        (name.trim().isEmpty ||
+            p.basename(name) != name ||
+            p.isAbsolute(name))) {
+      throw ArgumentError.value(
+        name,
+        'name',
+        'Must be a non-empty file name without path separators',
+      );
+    }
+    if (path != null && path.trim().isEmpty) {
+      throw ArgumentError.value(path, 'path', 'Cannot be empty');
+    }
+  }
+
+  final SqliteLoomProject _project;
+  final DatabaseFactory? _factory;
+  final DbFactoryResolver? _factoryResolver;
+  final String? _name;
+  final String? _path;
+  final DbPathResolver? _pathResolver;
+  final DbConnectionOptions _connection;
+  final DbObserver? _observer;
+  final DbObserverErrorHandler? _onObserverError;
+
+  SqliteLoom? _loom;
+  Future<SqliteLoom>? _opening;
+  Future<void>? _closing;
+  bool _closed = false;
+
+  /// Opens and initializes the database once, sharing concurrent callers.
+  Future<SqliteLoom> get ready => open();
+
+  /// Opens normally, or initializes a caller-supplied database for tests.
+  Future<SqliteLoom> open({Database? database}) {
+    final current = _loom;
+    if (current != null) {
+      if (database != null && !identical(database, current.database)) {
+        throw StateError('SQLite Loom database is already open');
+      }
+      return Future.value(current);
+    }
+    if (_closed) {
+      throw StateError('SQLite Loom database has been closed');
+    }
+    final pending = _opening;
+    if (pending != null) {
+      if (database != null) {
+        throw StateError('SQLite Loom database is already opening');
+      }
+      return pending;
+    }
+    final opening = _open(database);
+    _opening = opening;
+    return opening;
+  }
+
+  /// Ready typed database access.
+  SqliteLoom get loom =>
+      _loom ?? (throw StateError('Await appDatabase.ready before access'));
+
+  /// Ready low-level sqflite access for advanced integrations.
+  Database get raw => loom.database;
+
+  /// Whether initialization completed and the database is open.
+  bool get isOpen => _loom != null && !_closed;
+
+  Future<SqliteLoom> _open(Database? supplied) async {
+    Database? database = supplied;
+    final ownsDatabase = supplied == null;
+    try {
+      if (database == null) {
+        final factory = _factory ?? _factoryResolver!();
+        database = await factory.openDatabase(await _resolvePath(factory));
+      }
+      final options = _connection;
+      final loom = await _project.initialize(
+        database,
+        foreignKeys: options.foreignKeys,
+        writeAheadLogging: options.writeAheadLogging,
+        busyTimeout: options.busyTimeout,
+        synchronous: options.synchronous,
+        observer: _observer,
+        onObserverError: _onObserverError,
+      );
+      _loom = loom;
+      return loom;
+    } catch (_) {
+      if (ownsDatabase && database != null && database.isOpen) {
+        await database.close();
+      }
+      rethrow;
+    } finally {
+      _opening = null;
+    }
+  }
+
+  Future<String> _resolvePath(DatabaseFactory factory) async {
+    final explicit = _path;
+    if (explicit != null) return explicit;
+    final resolver = _pathResolver;
+    if (resolver != null) {
+      final resolved = await resolver();
+      if (resolved.trim().isEmpty) {
+        throw StateError('Database path resolver returned an empty path');
+      }
+      return resolved;
+    }
+    return p.join(await factory.getDatabasesPath(), _name!);
+  }
+
+  /// Closes the lifecycle permanently. Repeated calls share one operation.
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
+    _closed = true;
+    final opening = _opening;
+    if (opening != null) {
+      try {
+        await opening;
+      } catch (_) {
+        return;
+      }
+    }
+    final loom = _loom;
+    _loom = null;
+    if (loom != null) await loom.close();
   }
 }
 

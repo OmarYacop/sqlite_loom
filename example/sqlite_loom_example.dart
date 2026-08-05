@@ -84,13 +84,13 @@ Future<void> main() async {
       CallbackDbMigration(
         version: 1,
         name: 'create_todos',
-        up: (db) => DbSchema(db).createTable('todos', (table) {
+        up: (migration) => migration.schema.createTable('todos', (table) {
           table.integer('id').primaryKey(autoIncrement: true);
           table.text('title').notNull();
           table.boolean('done').notNull().defaultValue(false);
           table.dateTime('created_at').notNull();
         }),
-        down: (db) => DbSchema(db).dropTable('todos'),
+        down: (migration) => migration.schema.dropTable('todos'),
       ),
     ],
   ).migrate();

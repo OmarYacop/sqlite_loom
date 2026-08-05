@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../internal/sql.dart';
 import 'codec.dart';
 import 'expression.dart';
-import 'internal/sql.dart';
 
 /// Converts a Dart object into a JSON-compatible value.
 typedef JsonEncoder<T> = Object? Function(T value);

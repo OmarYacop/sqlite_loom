@@ -44,7 +44,9 @@ API and security review event.
   rollback.
 - Observer failures never change database operation results.
 - `close()` is awaitable and idempotent.
-- Released non-null migration checksums cannot change or be removed.
+- When application code supplies a checksum, a differing stored non-null
+  checksum is rejected. Unchecked migrations remain compatible with history
+  created by checksum-enabled releases.
 - Concurrent migrators re-check history inside the write transaction and retry
   bounded `SQLITE_BUSY` failures.
 - Unsupported SQLite features fail before feature SQL is executed.

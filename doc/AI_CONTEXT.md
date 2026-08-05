@@ -11,6 +11,17 @@ files, generate models, or infer schema.
 - Declare columns as `static final` fields so queries and row mapping reuse the
   same typed column objects.
 - Run `SqliteLoomMigrator` before constructing repositories that query tables.
+- Prefer the project CLI for migrations: `init`, then `make:migration` with
+  `--create` or `--table`. Migrations receive a transaction-bound
+  `DbMigrationContext`; use `migration.schema` and its raw/data helpers. There
+  is no migration-plan DSL or global database executor.
+- Prefer `sqliteLoomProject.database(...)` for application lifecycle ownership.
+  Await `.ready` once during bootstrap, inject the returned `SqliteLoom`, and use
+  `.raw` only for integrations that require the underlying sqflite database.
+  Migration history is the schema version; do not add sqflite `onUpgrade` logic.
+- Consume the generated `sqliteLoomProject`; do not maintain migration lists or
+  checksum wrappers in application code. Drafts are editable until
+  `migrate:finalize`. Do not edit finalized history; create a new migration.
 - Keep query objects immutable. Chain `where`, `orderBy`, `limit`, and `offset`.
 - Use `DbValues` for encoded writes. Use `DbValues.raw` only at a deliberate
   raw-SQL boundary.
@@ -83,4 +94,4 @@ final stream = users
 
 For a runnable end-to-end program, read
 `example/sqlite_loom_example.dart`. For operational recommendations, read
-`doc/BEST_PRACTICES.md`.
+`doc/BEST_PRACTICES.md`; for tooling, read `doc/CLI.md`.

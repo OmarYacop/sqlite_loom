@@ -313,7 +313,84 @@ if (capabilities.supports(DbFeature.fts5)) {
 
 ## Migration CLI
 
-Reuse the application migration list from a development tool:
+Initialize developer tooling in an application package:
+
+```shell
+dart pub add --dev sqflite_common_ffi
+dart run sqlite_loom init
+dart run sqlite_loom make:migration create_users --create users
+dart run sqlite_loom make:flavor qa
+dart run sqlite_loom migrate --env development
+```
+
+Generated migrations remain plain, reviewable Dart:
+
+```dart
+final class CreateUsersMigration extends DbMigration {
+  const CreateUsersMigration();
+
+  @override
+  int get version => 20260801123456;
+
+  @override
+  String get name => 'create_users';
+
+  @override
+  Future<void> up(DbMigrationContext migration) async {
+    await migration.schema.createTable('users', (table) {
+      table.id();
+      table.text('email').notNull().unique();
+      table.timestamps();
+    });
+  }
+
+  @override
+  Future<void> down(DbMigrationContext migration) =>
+      migration.schema.dropTable('users');
+}
+```
+
+`DbMigrationContext` is bound to the migration transaction and provides
+`schema`, `execute`, `query`, `insert`, `update`, and `delete`. Connection setup
+can use `configureSqliteLoomConnection(database)`, which enables foreign keys by
+default before migrations run.
+
+For application lifecycle ownership, configure a reusable handle once:
+
+```dart
+final appDatabase = sqliteLoomProject.database(
+  factoryResolver: () => databaseFactory,
+  name: 'app.sqlite',
+  connection: const DbConnectionOptions(
+    foreignKeys: true,
+    writeAheadLogging: true,
+    busyTimeout: Duration(seconds: 5),
+  ),
+);
+
+final db = await appDatabase.ready;
+```
+
+`ready` resolves the platform path, opens and configures the connection, runs
+migrations, and returns one concurrency-safe `SqliteLoom` instance. Use
+`appDatabase.loom` for typed access, `appDatabase.raw` for advanced integrations,
+and `appDatabase.close()` for lifecycle shutdown. Schema version is derived from
+migrations through `sqliteLoomProject.latestMigrationVersion`; do not maintain a
+competing sqflite `version`/`onUpgrade` flow.
+
+There is no migration-plan abstraction. Authored migration folders contain only
+ordinary migration classes. Explicit SQLite Loom commands maintain the readable
+`lib/database/migrations.dart` index and its `sqliteLoomProject` object; there
+are no `.g.dart` files, checksum wrappers, file watchers, or build-runner hooks.
+New migrations remain editable drafts until
+`migrate:finalize` locks them for release. CI can run `migrate:validate` to
+detect edits or removals from finalized history.
+Consolidated development-only history is managed with
+`migrate:retire <version> --into <replacement-version>` and
+`migrate:unretire <version>`; retirement metadata lives in the lock rather than
+application YAML or authored migrations.
+
+Applications can also own a custom runner directly:
 
 ```dart
 final exitCode = await runSqliteLoomCli(
@@ -324,15 +401,27 @@ final exitCode = await runSqliteLoomCli(
 );
 ```
 
-Supported commands are `migrate`, `status`, `rollback`, `reset`, `refresh`, and
-`fresh`. Keep destructive commands out of production tooling.
+Commands include migration status/control, isolated rehearsals, schema dumps and
+drift checks, table/schema browsing, read-only SQL and query-plan inspection,
+guarded inserts/updates/deletes/truncation, transactional CSV/JSON import,
+table copy, controlled write SQL, export, database integrity/optimization, and
+backups. Structured
+`--json` output is available for automation. `reset`, `refresh`, and `fresh`
+require explicit application permission plus `--force` or interactive
+confirmation, and are refused in production by default.
+Scoped mutation shortcuts require JSON equality predicates or an explicit
+whole-table `--all`; `--dry-run` previews affected rows before authorization.
 
 ## Documentation
+
+Contributors can use the [internal architecture guide](doc/ARCHITECTURE.md) for
+folder responsibilities and dependency direction.
 
 - [1.0 readiness roadmap](doc/ROADMAP_1_0.md)
 - [Public API and compatibility contract](doc/PUBLIC_API.md)
 - [Foundation hardening audit](doc/FOUNDATION_AUDIT.md)
 - [Security policy](SECURITY.md)
+- [Developer CLI and migrations](doc/CLI.md)
 - [Complete runnable example](example/sqlite_loom_example.dart)
 - [Best practices](doc/BEST_PRACTICES.md)
 - [Compact AI coding context](doc/AI_CONTEXT.md)

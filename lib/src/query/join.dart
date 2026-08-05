@@ -1,10 +1,10 @@
-import 'codec.dart';
-import 'column.dart';
-import 'database.dart';
-import 'expression.dart';
-import 'internal/sql.dart';
-import 'row.dart';
-import 'table.dart';
+import '../database/database.dart';
+import '../internal/sql.dart';
+import '../model/codec.dart';
+import '../model/column.dart';
+import '../model/expression.dart';
+import '../model/row.dart';
+import '../model/table.dart';
 
 /// A qualified and optionally aliased column selected from a join.
 abstract interface class AnyDbJoinColumn {

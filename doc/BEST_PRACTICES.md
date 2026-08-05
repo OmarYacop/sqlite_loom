@@ -12,6 +12,18 @@
    opt-in, but application code should still restrict where it is exposed.
 5. Back up important databases before destructive migrations and test migrations
    against production-shaped data.
+6. Use `dart run sqlite_loom make:migration <name>` for sortable migration
+   versions, commit the readable migration index and source lock, and run
+   `migrate:validate` in CI.
+7. Edit draft migrations freely, then run `migrate:finalize` before releasing.
+   Never edit finalized, applied, or distributed history.
+8. Rehearse with `sandbox` and check `schema:diff` before deploying migrations.
+9. Use `DbMigrationContext` rather than constructing `DbSchema` or retaining an
+   executor. Configure each open connection once with
+   `configureSqliteLoomConnection` before migrations.
+10. Let `SqliteLoomDatabase.ready` own open/configure/migrate sequencing and
+    share concurrent startup callers. Inject the ready `SqliteLoom` into
+    repositories instead of creating an application singleton wrapper.
 
 ## Tables and values
 
@@ -35,7 +47,8 @@
 - Use `insertAll` and `upsertAll` so bulk writes execute as SQLite batches.
 - Set `batchSize` for very large inputs and wrap chunks in a transaction when
   the entire operation must be atomic.
-- Add stable migration checksums before releasing migrations.
+- Keep `.sqlite_loom/migrations.lock.json` under version control after
+  finalizing migrations; checksum metadata stays out of application Dart.
 - Override `DbTable.columns` and validate the live schema in integration tests.
 - Use a transaction for multi-step invariants.
 - Remember that `allRows()` is an explicit safety escape hatch, not a default.

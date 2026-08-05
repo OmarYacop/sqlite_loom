@@ -1,8 +1,8 @@
 import 'package:sqflite_common/sqlite_api.dart';
 
-import 'capabilities.dart';
-import 'internal/sql.dart';
-import 'table.dart';
+import '../database/capabilities.dart';
+import '../internal/sql.dart';
+import '../model/table.dart';
 
 /// One runtime schema mismatch.
 final class DbSchemaIssue {
@@ -322,6 +322,16 @@ final class DbCreateTable {
   /// Adds an integer column.
   DbColumnDefinition integer(String name) => _add(name, 'INTEGER');
 
+  /// Adds a conventional auto-incrementing integer primary key.
+  DbColumnDefinition id({String name = 'id', bool autoIncrement = true}) =>
+      integer(name).primaryKey(autoIncrement: autoIncrement);
+
+  /// Adds a conventional non-null integer foreign-key column.
+  DbColumnDefinition foreignId(String name, {bool nullable = false}) {
+    final column = integer(name);
+    return nullable ? column.nullable() : column.notNull();
+  }
+
   /// Adds a TEXT-backed JSON column.
   DbColumnDefinition json(String name) => _add(name, 'TEXT');
 
@@ -330,6 +340,24 @@ final class DbCreateTable {
 
   /// Adds a text column.
   DbColumnDefinition text(String name) => _add(name, 'TEXT');
+
+  /// Adds conventional creation and update timestamp columns.
+  void timestamps({
+    String createdAt = 'created_at',
+    String updatedAt = 'updated_at',
+    bool nullable = false,
+  }) {
+    final created = dateTime(createdAt);
+    final updated = dateTime(updatedAt);
+    if (!nullable) {
+      created.notNull();
+      updated.notNull();
+    }
+  }
+
+  /// Adds a nullable soft-deletion timestamp column.
+  DbColumnDefinition softDeletes({String name = 'deleted_at'}) =>
+      dateTime(name);
 
   /// Adds a column with a trusted custom SQLite [type].
   DbColumnDefinition custom(String name, String type) {
@@ -448,8 +476,8 @@ final class DbColumnDefinition {
 
   /// Adds a single-column foreign-key reference.
   DbColumnDefinition references(
-    String table,
-    String column, {
+    String table, {
+    String column = 'id',
     String? onDelete,
     String? onUpdate,
   }) {
@@ -457,6 +485,30 @@ final class DbColumnDefinition {
     _referencesColumn = column;
     _onDelete = onDelete;
     _onUpdate = onUpdate;
+    return this;
+  }
+
+  /// Uses cascading deletes for this foreign key.
+  DbColumnDefinition cascadeOnDelete() {
+    _onDelete = 'cascade';
+    return this;
+  }
+
+  /// Uses cascading updates for this foreign key.
+  DbColumnDefinition cascadeOnUpdate() {
+    _onUpdate = 'cascade';
+    return this;
+  }
+
+  /// Restricts deletion while referenced rows exist.
+  DbColumnDefinition restrictOnDelete() {
+    _onDelete = 'restrict';
+    return this;
+  }
+
+  /// Sets the foreign key to null when its referenced row is deleted.
+  DbColumnDefinition nullOnDelete() {
+    _onDelete = 'set null';
     return this;
   }
 

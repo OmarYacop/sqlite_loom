@@ -1,4 +1,4 @@
-import 'table.dart';
+import '../model/table.dart';
 
 /// The category of a recorded table mutation.
 enum DbChangeKind { insert, update, delete, raw }

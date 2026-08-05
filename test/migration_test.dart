@@ -32,6 +32,46 @@ void main() {
     expect(await _tableExists(database, 'posts'), isTrue);
   });
 
+  test(
+    'project database owns concurrent readiness and connection lifecycle',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'sqlite_loom_database_',
+      );
+      final path = '${directory.path}/app.sqlite';
+      final project = SqliteLoomProject(testMigrations());
+      final appDatabase = project.database(
+        factory: databaseFactoryFfi,
+        path: path,
+        connection: const DbConnectionOptions(
+          busyTimeout: Duration(seconds: 1),
+        ),
+      );
+      addTearDown(() async {
+        if (appDatabase.isOpen) await appDatabase.close();
+        await databaseFactoryFfi.deleteDatabase(path);
+        await directory.delete(recursive: true);
+      });
+
+      final first = appDatabase.ready;
+      final second = appDatabase.ready;
+      final instances = await Future.wait([first, second]);
+
+      expect(identical(instances.first, instances.last), isTrue);
+      expect(identical(appDatabase.loom, instances.first), isTrue);
+      expect(identical(appDatabase.raw, instances.first.database), isTrue);
+      expect(project.latestMigrationVersion, 2);
+      expect(await _tableExists(appDatabase.raw, 'users'), isTrue);
+      final foreignKeys = await appDatabase.raw.rawQuery('PRAGMA foreign_keys');
+      expect(foreignKeys.single.values.single, 1);
+
+      await appDatabase.close();
+      expect(appDatabase.isOpen, isFalse);
+      expect(() => appDatabase.loom, throwsStateError);
+      expect(() => appDatabase.ready, throwsStateError);
+    },
+  );
+
   test('rollback reverses the latest batch only', () async {
     final migrator = SqliteLoomMigrator(database, migrations: testMigrations());
     await migrator.migrate(through: 1);
@@ -94,6 +134,37 @@ void main() {
     },
   );
 
+  test(
+    'retired migrations accept history but never run on fresh databases',
+    () async {
+      final historical = CallbackDbMigration(
+        version: 5,
+        name: 'historical_feature',
+        up: (migration) => migration.execute(
+          'CREATE TABLE historical_feature (id INTEGER PRIMARY KEY)',
+        ),
+      );
+      await SqliteLoomMigrator(database, migrations: [historical]).migrate();
+
+      final migrator = SqliteLoomMigrator(
+        database,
+        migrations: const [],
+        retiredVersions: const {5},
+      );
+      expect((await migrator.migrate()).applied, isEmpty);
+      final existing = (await migrator.status()).single;
+      expect(existing.isRetired, isTrue);
+      expect(existing.isMissing, isFalse);
+      expect(existing.isApplied, isTrue);
+
+      final rebuilt = await migrator.fresh(allowDestructive: true);
+      expect(rebuilt.migration.applied, isEmpty);
+      final fresh = (await migrator.status()).single;
+      expect(fresh.isRetired, isTrue);
+      expect(fresh.isApplied, isFalse);
+    },
+  );
+
   test('migration checksums detect edited released migrations', () async {
     final original = CallbackDbMigration(
       version: 1,
@@ -115,25 +186,29 @@ void main() {
     );
   });
 
-  test('migration checksums cannot be removed after release', () async {
-    final original = CallbackDbMigration(
-      version: 1,
-      name: 'create_checked',
-      checksum: 'v1-original',
-      up: (db) => db.execute('CREATE TABLE checked (id INTEGER)'),
-    );
-    await SqliteLoomMigrator(database, migrations: [original]).migrate();
-    final checksumRemoved = CallbackDbMigration(
-      version: 1,
-      name: 'create_checked',
-      up: (_) {},
-    );
+  test(
+    'unchecked migrations accept history from checksum-enabled releases',
+    () async {
+      final original = CallbackDbMigration(
+        version: 1,
+        name: 'create_checked',
+        checksum: 'v1-original',
+        up: (db) => db.execute('CREATE TABLE checked (id INTEGER)'),
+      );
+      await SqliteLoomMigrator(database, migrations: [original]).migrate();
+      final checksumRemoved = CallbackDbMigration(
+        version: 1,
+        name: 'create_checked',
+        up: (_) {},
+      );
 
-    await expectLater(
-      SqliteLoomMigrator(database, migrations: [checksumRemoved]).migrate(),
-      throwsA(isA<StateError>()),
-    );
-  });
+      final result = await SqliteLoomMigrator(
+        database,
+        migrations: [checksumRemoved],
+      ).migrate();
+      expect(result.applied, isEmpty);
+    },
+  );
 
   test('failed migration rolls back schema and migration history', () async {
     final migration = CallbackDbMigration(
@@ -245,7 +320,7 @@ void main() {
           printLine: lines.add,
         );
         final freshCode = await runSqliteLoomCli(
-          ['fresh'],
+          ['fresh', '--force'],
           openDatabase: openDatabase,
           migrations: testMigrations(),
           allowDestructive: true,
@@ -264,7 +339,7 @@ void main() {
         );
         expect(
           lines,
-          contains('fresh is destructive. Enable allowDestructive to run it.'),
+          contains('Error: fresh is disabled by the application runner.'),
         );
         expect(lines, contains('Dropped 3 tables.'));
         expect(lines, contains('Migrated 2 migrations.'));
@@ -281,8 +356,8 @@ List<DbMigration> testMigrations() {
     CallbackDbMigration(
       version: 1,
       name: 'create_users',
-      up: (db) {
-        return DbSchema(db).createTable('users', (table) {
+      up: (migration) {
+        return migration.schema.createTable('users', (table) {
           table.integer('id').primaryKey(autoIncrement: true);
           table.text('name').notNull();
           table.text('email').notNull().unique();
@@ -290,27 +365,27 @@ List<DbMigration> testMigrations() {
           table.dateTime('created_at').notNull();
         });
       },
-      down: (db) => DbSchema(db).dropTable('users'),
+      down: (migration) => migration.schema.dropTable('users'),
     ),
     CallbackDbMigration(
       version: 2,
       name: 'create_posts',
-      up: (db) async {
-        final schema = DbSchema(db);
+      up: (migration) async {
+        final schema = migration.schema;
         await schema.createTable('posts', (table) {
           table.integer('id').primaryKey(autoIncrement: true);
           table
               .integer('user_id')
               .notNull()
-              .references('users', 'id', onDelete: 'cascade');
+              .references('users', column: 'id', onDelete: 'cascade');
           table.text('title').notNull();
           table.text('body').nullable();
           table.dateTime('created_at').notNull();
         });
         await schema.createIndex('posts_user_id_index', 'posts', ['user_id']);
       },
-      down: (db) async {
-        final schema = DbSchema(db);
+      down: (migration) async {
+        final schema = migration.schema;
         await schema.dropIndex('posts_user_id_index');
         await schema.dropTable('posts');
       },
