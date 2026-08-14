@@ -53,6 +53,57 @@ final class DbCompositeKey {
       .reduce((left, right) => left.and(right));
 }
 
+/// Optional live-schema expectations declared by a mapped table.
+final class DbTableSchema {
+  const DbTableSchema({
+    this.foreignKeys = const [],
+    this.indexes = const [],
+    this.strict,
+    this.withoutRowId,
+  });
+
+  final List<DbForeignKeyExpectation> foreignKeys;
+  final List<DbIndexExpectation> indexes;
+
+  /// Expected STRICT flag, or null when it should not be validated.
+  final bool? strict;
+
+  /// Expected WITHOUT ROWID flag, or null when it should not be validated.
+  final bool? withoutRowId;
+}
+
+/// Expected foreign-key shape for runtime schema validation.
+final class DbForeignKeyExpectation {
+  const DbForeignKeyExpectation({
+    required this.columns,
+    required this.referencesTable,
+    required this.referencesColumns,
+    this.onDelete = 'NO ACTION',
+    this.onUpdate = 'NO ACTION',
+  });
+
+  final List<String> columns;
+  final String referencesTable;
+  final List<String> referencesColumns;
+  final String onDelete;
+  final String onUpdate;
+}
+
+/// Expected index shape for runtime schema validation.
+final class DbIndexExpectation {
+  const DbIndexExpectation({
+    required this.name,
+    required this.columns,
+    this.unique = false,
+    this.partial = false,
+  });
+
+  final String name;
+  final List<String> columns;
+  final bool unique;
+  final bool partial;
+}
+
 /// Maps between a domain [Row] and one SQLite table with primary key [Key].
 abstract class DbTable<Row, Key> {
   /// Creates a table mapping.
@@ -68,6 +119,9 @@ abstract class DbTable<Row, Key> {
   ///
   /// Override with every mapped column for complete validation.
   Iterable<AnyDbColumn> get columns => [primaryKey];
+
+  /// Optional indexes, foreign keys, and table flags to validate at runtime.
+  DbTableSchema get schema => const DbTableSchema();
 
   /// The identity used for change invalidation.
   DbTableId get tableId => DbTableId(tableName);

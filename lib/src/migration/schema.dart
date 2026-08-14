@@ -103,8 +103,130 @@ final class DbSchema {
           );
         }
       }
+      await _validateTableOptions(table, issues);
+      await _validateForeignKeys(table, issues);
+      await _validateIndexes(table, issues);
     }
     return DbSchemaValidation(List.unmodifiable(issues));
+  }
+
+  Future<void> _validateTableOptions(
+    DbTable<Object?, Object?> table,
+    List<DbSchemaIssue> issues,
+  ) async {
+    final expected = table.schema;
+    if (expected.strict == null && expected.withoutRowId == null) return;
+    final rows = await database.rawQuery('PRAGMA table_list');
+    final row = rows
+        .cast<Map<String, Object?>>()
+        .where((candidate) => candidate['name'] == table.tableName)
+        .firstOrNull;
+    if (row == null) return;
+    final strict = (row['strict'] as num?)?.toInt() == 1;
+    final withoutRowId = (row['wr'] as num?)?.toInt() == 1;
+    if (expected.strict != null && expected.strict != strict) {
+      issues.add(
+        DbSchemaIssue(
+          table.tableName,
+          'expected strict=${expected.strict}, found strict=$strict',
+        ),
+      );
+    }
+    if (expected.withoutRowId != null &&
+        expected.withoutRowId != withoutRowId) {
+      issues.add(
+        DbSchemaIssue(
+          table.tableName,
+          'expected withoutRowId=${expected.withoutRowId}, '
+          'found withoutRowId=$withoutRowId',
+        ),
+      );
+    }
+  }
+
+  Future<void> _validateForeignKeys(
+    DbTable<Object?, Object?> table,
+    List<DbSchemaIssue> issues,
+  ) async {
+    if (table.schema.foreignKeys.isEmpty) return;
+    final rows = await database.rawQuery(
+      'PRAGMA foreign_key_list(${quoteIdentifier(table.tableName)})',
+    );
+    final grouped = <int, List<Map<String, Object?>>>{};
+    for (final row in rows) {
+      final id = (row['id']! as num).toInt();
+      grouped.putIfAbsent(id, () => []).add(row);
+    }
+    for (final expected in table.schema.foreignKeys) {
+      final found = grouped.values.any((parts) {
+        parts.sort(
+          (left, right) =>
+              (left['seq']! as num).compareTo(right['seq']! as num),
+        );
+        return parts.first['table'] == expected.referencesTable &&
+            parts.map((part) => part['from']).toList().toString() ==
+                expected.columns.toString() &&
+            parts.map((part) => part['to']).toList().toString() ==
+                expected.referencesColumns.toString() &&
+            _normalizedSqlWord(parts.first['on_delete']) ==
+                _normalizedSqlWord(expected.onDelete) &&
+            _normalizedSqlWord(parts.first['on_update']) ==
+                _normalizedSqlWord(expected.onUpdate);
+      });
+      if (!found) {
+        issues.add(
+          DbSchemaIssue(
+            table.tableName,
+            'foreign key ${expected.columns.join(', ')} -> '
+            '${expected.referencesTable}(${expected.referencesColumns.join(', ')}) '
+            'is missing or differs',
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _validateIndexes(
+    DbTable<Object?, Object?> table,
+    List<DbSchemaIssue> issues,
+  ) async {
+    if (table.schema.indexes.isEmpty) return;
+    final rows = await database.rawQuery(
+      'PRAGMA index_list(${quoteIdentifier(table.tableName)})',
+    );
+    final indexes = {for (final row in rows) row['name']! as String: row};
+    for (final expected in table.schema.indexes) {
+      final row = indexes[expected.name];
+      if (row == null) {
+        issues.add(
+          DbSchemaIssue(table.tableName, 'index ${expected.name} is missing'),
+        );
+        continue;
+      }
+      final unique = (row['unique']! as num).toInt() == 1;
+      final partial = (row['partial'] as num?)?.toInt() == 1;
+      final columns = (await database.rawQuery(
+        'PRAGMA index_info(${quoteIdentifier(expected.name)})',
+      )).toList();
+      columns.sort(
+        (left, right) =>
+            (left['seqno']! as num).compareTo(right['seqno']! as num),
+      );
+      final names = columns.map((column) => column['name']).toList();
+      if (unique != expected.unique ||
+          partial != expected.partial ||
+          names.toString() != expected.columns.toString()) {
+        issues.add(
+          DbSchemaIssue(
+            table.tableName,
+            'index ${expected.name} expected columns '
+            '${expected.columns}, unique=${expected.unique}, '
+            'partial=${expected.partial}; found columns $names, '
+            'unique=$unique, partial=$partial',
+          ),
+        );
+      }
+    }
   }
 
   /// Adds [column] to [tableName].
@@ -149,6 +271,29 @@ final class DbSchema {
     return database.execute(
       'CREATE ${uniqueSql}INDEX $ifNotExistsSql${quoteIdentifier(name)} '
       'ON ${quoteIdentifier(tableName)} ($columnSql)$whereSql',
+    );
+  }
+
+  /// Creates an index over trusted SQLite expressions.
+  Future<void> createExpressionIndex(
+    String name,
+    String tableName,
+    Iterable<DbSqlLiteral> expressions, {
+    bool ifNotExists = true,
+    bool unique = false,
+    DbSqlLiteral? where,
+  }) {
+    final values = expressions.toList(growable: false);
+    if (values.isEmpty || values.any((value) => value.sql.trim().isEmpty)) {
+      throw ArgumentError.value(expressions, 'expressions', 'Cannot be empty');
+    }
+    final uniqueSql = unique ? 'UNIQUE ' : '';
+    final guard = ifNotExists ? 'IF NOT EXISTS ' : '';
+    final whereSql = where == null ? '' : ' WHERE ${where.sql}';
+    return database.execute(
+      'CREATE ${uniqueSql}INDEX $guard${quoteIdentifier(name)} ON '
+      '${quoteIdentifier(tableName)} (${values.map((value) => value.sql).join(', ')})'
+      '$whereSql',
     );
   }
 
@@ -260,7 +405,56 @@ final class DbSchema {
     final guard = ifExists ? 'IF EXISTS ' : '';
     return database.execute('DROP VIEW $guard${quoteIdentifier(name)}');
   }
+
+  /// Creates a trigger from trusted trigger-body SQL.
+  Future<void> createTrigger(
+    String name,
+    String tableName, {
+    required DbTriggerTiming timing,
+    required DbTriggerEvent event,
+    required DbSqlLiteral body,
+    DbSqlLiteral? when,
+    bool ifNotExists = true,
+  }) {
+    if (body.sql.trim().isEmpty) {
+      throw ArgumentError.value(body.sql, 'body', 'Cannot be empty');
+    }
+    final guard = ifNotExists ? 'IF NOT EXISTS ' : '';
+    final whenSql = when == null ? '' : ' WHEN ${when.sql}';
+    return database.execute(
+      'CREATE TRIGGER $guard${quoteIdentifier(name)} ${timing.sql} '
+      '${event.sql} ON ${quoteIdentifier(tableName)}$whenSql '
+      'BEGIN ${body.sql}; END',
+    );
+  }
+
+  /// Drops a trigger.
+  Future<void> dropTrigger(String name, {bool ifExists = true}) {
+    final guard = ifExists ? 'IF EXISTS ' : '';
+    return database.execute('DROP TRIGGER $guard${quoteIdentifier(name)}');
+  }
 }
+
+enum DbTriggerTiming {
+  before('BEFORE'),
+  after('AFTER'),
+  insteadOf('INSTEAD OF');
+
+  const DbTriggerTiming(this.sql);
+  final String sql;
+}
+
+enum DbTriggerEvent {
+  insert('INSERT'),
+  update('UPDATE'),
+  delete('DELETE');
+
+  const DbTriggerEvent(this.sql);
+  final String sql;
+}
+
+String _normalizedSqlWord(Object? value) =>
+    value.toString().trim().toUpperCase();
 
 String _indexOrder(String order) {
   final normalized = order.trim().toUpperCase();
@@ -438,6 +632,10 @@ final class DbColumnDefinition {
   String? _referencesColumn;
   String? _onDelete;
   String? _onUpdate;
+  String? _collation;
+  DbSqlLiteral? _check;
+  DbSqlLiteral? _generatedExpression;
+  bool _generatedStored = false;
 
   /// Marks this integer primary-key column as auto-incrementing.
   DbColumnDefinition autoIncrement() {
@@ -452,6 +650,42 @@ final class DbColumnDefinition {
   DbColumnDefinition defaultValue(Object? value) {
     _hasDefault = true;
     _defaultValue = value;
+    return this;
+  }
+
+  /// Adds a supported SQLite collation to this column.
+  DbColumnDefinition collate(String collation) {
+    _collation = _indexCollation(collation);
+    return this;
+  }
+
+  /// Adds a trusted column-level check expression.
+  DbColumnDefinition check(DbSqlLiteral expression) {
+    if (expression.sql.trim().isEmpty) {
+      throw ArgumentError.value(
+        expression.sql,
+        'expression',
+        'Cannot be empty',
+      );
+    }
+    _check = expression;
+    return this;
+  }
+
+  /// Defines a generated column using a trusted SQLite expression.
+  DbColumnDefinition generatedAs(
+    DbSqlLiteral expression, {
+    bool stored = false,
+  }) {
+    if (expression.sql.trim().isEmpty) {
+      throw ArgumentError.value(
+        expression.sql,
+        'expression',
+        'Cannot be empty',
+      );
+    }
+    _generatedExpression = expression;
+    _generatedStored = stored;
     return this;
   }
 
@@ -520,6 +754,11 @@ final class DbColumnDefinition {
 
   /// Compiles this definition into SQL.
   String toSql() {
+    if (_generatedExpression != null && (_hasDefault || _primaryKey)) {
+      throw StateError(
+        'Generated column $name cannot have a default or primary key',
+      );
+    }
     final parts = <String>[
       quoteIdentifier(name),
       type,
@@ -527,7 +766,12 @@ final class DbColumnDefinition {
       if (_autoIncrement) 'AUTOINCREMENT',
       if (!_nullable && !_primaryKey) 'NOT NULL',
       if (_unique) 'UNIQUE',
+      if (_collation != null) 'COLLATE $_collation',
+      if (_check != null) 'CHECK (${_check!.sql})',
       if (_hasDefault) 'DEFAULT ${_literal(_defaultValue)}',
+      if (_generatedExpression != null)
+        'GENERATED ALWAYS AS (${_generatedExpression!.sql}) '
+            '${_generatedStored ? 'STORED' : 'VIRTUAL'}',
       if (_referencesTable != null && _referencesColumn != null)
         'REFERENCES ${quoteIdentifier(_referencesTable!)} '
             '(${quoteIdentifier(_referencesColumn!)})'

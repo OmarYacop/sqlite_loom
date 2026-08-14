@@ -147,7 +147,7 @@ Future<int> runSqliteLoomProjectCli(
       return LoomExitCode.success;
     }
     if (arguments.first == '--version' || arguments.first == 'version') {
-      out('sqlite_loom 0.3.0');
+      out('sqlite_loom 0.4.0');
       return LoomExitCode.success;
     }
     final command = arguments.first;
@@ -181,7 +181,7 @@ Future<int> runSqliteLoomProjectCli(
       default:
         final runtimeCommand = _runnerAliases[command] ?? command;
         if (_runnerCommands.contains(runtimeCommand)) {
-          return _delegate(directory, [
+          return await _delegate(directory, [
             runtimeCommand,
             ...tail,
           ], processRunner: processRunner);

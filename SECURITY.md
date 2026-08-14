@@ -4,8 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.2.x | Yes |
-| 0.1.x and earlier | No |
+| 0.4.x | Yes |
+| 0.3.x and earlier | No |
 
 Only the latest patch release in the supported minor series receives security
 fixes.

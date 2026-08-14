@@ -4,12 +4,12 @@ A generator-free reactive SQLite layer for Dart and Flutter with typed tables,
 immutable queries, explicit migrations, safe writes, transactions, and live
 streams.
 
-SQLite Loom sits on top of `sqflite_common`. Your application owns database
-opening and platform configuration; SQLite Loom adds a small, predictable data
-layer without build runner, annotations, or generated files.
+SQLite Loom sits on top of `sqflite_common`. It can wrap an application-opened
+database or own the open/configure/migrate/close lifecycle through
+`SqliteLoomDatabase`, without build runner, annotations, or generated files.
 
-> SQLite Loom is an early `0.1.0` release. The core behavior is tested, but the
-> public API may evolve before `1.0.0`.
+> SQLite Loom is a pre-1.0 package. Its candidate API is compatibility-tested,
+> but additive and intentionally versioned changes may still land before 1.0.
 
 ## Why SQLite Loom?
 
@@ -33,8 +33,9 @@ compact typed layer without generated code. Consider a code-generating ORM such
 as Drift when compile-time SQL verification, joins mapped to generated result
 types, or a larger ecosystem is more important than keeping the layer small.
 
-SQLite Loom does not open databases, synchronize across devices, encrypt files,
-or observe writes made outside its own API automatically.
+SQLite Loom does not synchronize across devices or encrypt files. Writes made
+outside its API can be reported explicitly with `invalidate`, or detected from
+other SQLite connections with an optional `data_version` monitor.
 
 ## Install
 
@@ -166,6 +167,19 @@ Queries also provide `sum`, `average`, `minimum`, `maximum`, and `after`/`before
 keyset cursor helpers. Text columns provide `like`, `contains`, `startsWith`,
 and `endsWith` predicates.
 
+Grouped selections keep aggregate results typed:
+
+```dart
+final total = DbAggregate.count(as: 'total');
+final rows = await db.todos
+    .groupBy([TodosTable.done])
+    .having(DbPredicate.trusted('COUNT(*) > ?', [0]))
+    .select([TodosTable.done, total])
+    .get();
+
+final pendingCount = rows.first.get(total.resultColumn);
+```
+
 Use `compile()` to inspect generated SQL and bound arguments without executing
 it, or `explain()` to inspect SQLite's query plan and index usage.
 For bounded-memory processing, use `pages()` or `keysetPages()` with a unique
@@ -173,7 +187,69 @@ cursor column.
 
 Selections support `distinct()` and `decodeWith(...)`. Cross-table reads use
 `joinFrom(...)` with explicitly qualified `DbJoinColumn` values so duplicate
-column names remain unambiguous.
+column names remain unambiguous. Joined selections support ordering,
+pagination, distinct results, decoding, first/count/existence operations,
+compilation, query plans, and live queries.
+
+## Typed relationships
+
+Relationships are explicit generator-free descriptors. They support single-row
+and batched loading as well as live grouped results:
+
+```dart
+final todoComments = DbHasMany<Todo, int, Comment, int>(
+  parent: const TodosTable(),
+  children: const CommentsTable(),
+  foreignKey: CommentsTable.todoId,
+  foreignKeyOf: (comment) => comment.todoId,
+);
+
+final commentsByTodo = await todoComments.loadAll(db, todos);
+
+final latestCommentsByTodo = await todoComments.loadAllLimited(
+  db,
+  todos,
+  limit: 20,
+  transform: (query) => query.orderBy(CommentsTable.createdAt.descending()),
+);
+```
+
+Use `DbHasOne` for unique child rows and `DbBelongsTo` for inverse references.
+`loadAll` performs one related query and returns empty buckets for parents with
+no related rows, preventing common N+1 read patterns. `loadAllLimited` applies
+filters, ordering, and limits independently per parent; `loadAllBatched` safely
+chunks very large key sets for older SQLite variable limits.
+
+Heterogeneous feeds can preserve each table's decoder while applying one
+cross-table cursor order and limit per parent:
+
+```dart
+final activity = DbMergedRelationships<Account, int, Activity>([
+  dbMergedRelationshipSource(
+    relationship: accountMessages,
+    cursorColumn: MessagesTable.ulid,
+    convert: (message) => message,
+  ),
+  dbMergedRelationshipSource(
+    relationship: accountEvents,
+    cursorColumn: EventsTable.ulid,
+    convert: (event) => event,
+  ),
+]);
+
+final latest = await activity.load(db, accounts, limit: 100);
+final older = await activity.loadKeys(
+  db,
+  [accountId],
+  limit: 50,
+  cursor: DbMergedCursorBound.before(beforeUlid),
+);
+```
+
+Merged sources expose selected columns through `DbTable.columns` and use
+cursor columns with matching SQLite affinities. Loom aligns heterogeneous
+projections internally and uses source plus primary-key tie-breakers for
+deterministic ordering.
 
 Predicates compose without mutating the source query:
 
@@ -262,12 +338,17 @@ Nested `savepoint` callbacks isolate rollback and reactive changes.
 ## Operations and diagnostics
 
 Pass a `DbObserver` to `SqliteLoom` for query/write durations and result counts;
-bound values are never exposed. `configure` applies foreign keys, WAL, busy
-timeouts, and synchronous durability. Maintenance helpers include
+bound values are never exposed. Observations also include sequence IDs, UTC
+start times, optional slow-operation classification, sanitized SQL
+fingerprints, and application context. `configure` applies foreign keys, WAL,
+busy timeouts, and synchronous durability. Maintenance helpers include
 `integrityCheck`, `optimize`, `vacuum`, and `backupTo`.
 
 Migration callbacks may declare stable checksums. `DbSchema.validate` compares
-the columns declared by `DbTable.columns` with the live SQLite schema.
+the columns declared by `DbTable.columns` with the live SQLite schema. Tables
+may additionally declare `DbTable.schema` to validate foreign keys, indexes,
+STRICT, and WITHOUT ROWID flags. Schema construction also supports generated
+columns, expression indexes, and triggers.
 
 Import `package:sqlite_loom/testing.dart` for `SqliteLoomTestHarness`. Run
 `dart run benchmark/bulk_writes.dart` to measure batched writes locally.
@@ -284,6 +365,11 @@ await db.rawWrite(
   affects: {const DbTableId('todos')},
 );
 ```
+
+If another abstraction writes through a retained raw handle, call
+`db.invalidate({tableId})`. For writes committed by another SQLite connection,
+use `monitorExternalChanges(...)` and close the returned monitor with the
+application lifecycle.
 
 Raw reads and multi-table reactive reads remain available without expanding the
 typed table DSL:
@@ -414,18 +500,18 @@ whole-table `--all`; `--dry-run` previews affected rows before authorization.
 
 ## Documentation
 
-Contributors can use the [internal architecture guide](doc/ARCHITECTURE.md) for
+Contributors can use the [internal architecture guide](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/ARCHITECTURE.md) for
 folder responsibilities and dependency direction.
 
-- [1.0 readiness roadmap](doc/ROADMAP_1_0.md)
-- [Public API and compatibility contract](doc/PUBLIC_API.md)
-- [Foundation hardening audit](doc/FOUNDATION_AUDIT.md)
-- [Security policy](SECURITY.md)
-- [Developer CLI and migrations](doc/CLI.md)
-- [Complete runnable example](example/sqlite_loom_example.dart)
-- [Best practices](doc/BEST_PRACTICES.md)
-- [Compact AI coding context](doc/AI_CONTEXT.md)
-- [Contributing](CONTRIBUTING.md)
+- [1.0 readiness roadmap](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/ROADMAP_1_0.md)
+- [Public API and compatibility contract](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/PUBLIC_API.md)
+- [Foundation hardening audit](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/FOUNDATION_AUDIT.md)
+- [Security policy](https://github.com/OmarYacop/sqlite_loom/blob/main/SECURITY.md)
+- [Developer CLI and migrations](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/CLI.md)
+- [Complete runnable example](https://github.com/OmarYacop/sqlite_loom/blob/main/example/sqlite_loom_example.dart)
+- [Best practices](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/BEST_PRACTICES.md)
+- [Compact AI coding context](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/AI_CONTEXT.md)
+- [Contributing](https://github.com/OmarYacop/sqlite_loom/blob/main/CONTRIBUTING.md)
 - API reference is generated on pub.dev for every release.
 
 ## License

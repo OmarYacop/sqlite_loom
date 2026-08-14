@@ -1,3 +1,26 @@
+## 0.4.0 - 2026-08-14
+
+- Added explicit live-query invalidation and optional `PRAGMA data_version`
+  monitoring for writes committed through other abstractions or connections.
+- Added typed `DbHasMany`, `DbHasOne`, and `DbBelongsTo` relationships with
+  single-row, batched, live, bind-limit-safe, and per-parent-limited loading to
+  avoid N+1 reads without application-owned SQL.
+- Added typed heterogeneous `DbMergedRelationships` feeds with cross-table
+  cursor ordering, per-parent limits, stable tie-breakers, key loading, and
+  exclusive before/after cursor bounds.
+- Added typed grouped selections with `groupBy`, `having`, aggregate aliases,
+  decoding, counts, query compilation, plans, and live results.
+- Expanded joined selections with ordering, pagination, distinct results,
+  decoding, first/count/existence operations, compilation, and query plans.
+- Added generated columns, expression indexes, triggers, column checks and
+  collations, plus declared foreign-key/index/STRICT/WITHOUT ROWID validation.
+- Expanded observations with sequence IDs, UTC start times, slow-operation
+  classification, sanitized SQL fingerprints, and application context.
+- Fixed asynchronous developer-CLI error handling and Windows path assertions.
+- Updated the LMS consumer to load typed message/event/membership timelines in
+  one cross-table ULID order, use typed transactional cleanup, and validate
+  declared production schema invariants.
+
 ## 0.3.0 - 2026-08-01
 
 - Added a project-aware developer CLI with configuration discovery, migration

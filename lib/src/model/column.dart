@@ -250,6 +250,21 @@ final class NullableTextDbColumn extends DbColumn<String?> {
       like('%${_escapeLike(value)}', caseSensitive: caseSensitive);
 
   DbPredicate matches(String query) => DbPredicate('$sql MATCH ?', [query]);
+
+  DbPredicate greaterThan(String value) =>
+      DbPredicate('$sql > ?', [encode(value)]);
+
+  DbPredicate greaterThanOrEquals(String value) =>
+      DbPredicate('$sql >= ?', [encode(value)]);
+
+  DbPredicate lessThan(String value) =>
+      DbPredicate('$sql < ?', [encode(value)]);
+
+  DbPredicate lessThanOrEquals(String value) =>
+      DbPredicate('$sql <= ?', [encode(value)]);
+
+  DbPredicate between(String lower, String upper) =>
+      DbPredicate('$sql BETWEEN ? AND ?', [encode(lower), encode(upper)]);
 }
 
 String _escapeLike(String value) {

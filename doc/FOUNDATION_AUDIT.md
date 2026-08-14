@@ -28,10 +28,12 @@ the additional soak/device work listed in the 1.0 roadmap is complete.
 ## Latest executable evidence
 
 - `dart analyze`: no issues.
-- `dart test`: 53 tests passed.
+- `dart test`: 81 tests passed.
 - `dart doc`: zero warnings and zero errors.
-- Bulk round trip: approximately 109,890 write rows/sec and 1,000,000 typed
+- Bulk round trip: approximately 120,482 write rows/sec and 909,091 typed
   read rows/sec on the audit machine; both exceed the portable CI floors.
+- Line coverage: 69.0%; high-risk additions have direct integration coverage,
+  while increasing broad CLI/schema branch coverage remains ongoing 1.0 work.
 - Mobile: scoped analysis reports no issues; the complete application migration
   fixture passes.
 - `git diff --check`: clean.

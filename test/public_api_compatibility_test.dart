@@ -5,7 +5,7 @@ import 'package:test/test.dart';
 void main() {
   sqfliteFfiInit();
 
-  test('0.2 public query signatures remain source compatible', () async {
+  test('0.4 public query signatures remain source compatible', () async {
     final database = await databaseFactoryFfi.openDatabase(
       inMemoryDatabasePath,
     );
@@ -13,12 +13,38 @@ void main() {
     final DbTableQuery<_Fixture, int> query = loom.table(const _FixtureTable());
     final select = query.select([_FixtureTable.id, _FixtureTable.name]);
     final pluck = query.pluck(_FixtureTable.name);
+    final aggregate = DbAggregate.count();
+    final grouped = query.groupBy([_FixtureTable.name]).select([
+      _FixtureTable.name,
+      aggregate,
+    ]);
+    final relation = DbHasMany<_Fixture, int, _Fixture, int>(
+      parent: const _FixtureTable(),
+      children: const _FixtureTable(),
+      foreignKey: _FixtureTable.id,
+      foreignKeyOf: (row) => row.id,
+    );
+    final mergedSource = dbMergedRelationshipSource(
+      relationship: relation,
+      cursorColumn: _FixtureTable.name,
+      convert: (row) => row,
+    );
+    final merged = DbMergedRelationships<_Fixture, int, _Fixture>([
+      mergedSource,
+    ]);
 
     expect(select, isA<DbRowSelection<_Fixture, int>>());
     expect(pluck, isA<DbColumnSelection<_Fixture, int, String>>());
+    expect(grouped, isA<DbGroupedSelection<_Fixture, int>>());
+    expect(
+      relation.query(loom, (id: 1, name: 'fixture')),
+      isA<DbTableQuery<_Fixture, int>>(),
+    );
+    expect(merged, isA<DbMergedRelationships<_Fixture, int, _Fixture>>());
     expect(query.whereKey(1), isA<DbTableQuery<_Fixture, int>>());
     expect(DbPredicate.trusted('name = ?', ['safe']), isA<DbPredicate>());
     expect(DbOrdering.trusted('name ASC'), isA<DbOrdering>());
+    loom.invalidate({const _FixtureTable().tableId});
     await loom.close();
   });
 }

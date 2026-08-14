@@ -25,6 +25,10 @@ final class DbObservation {
     this.sql,
     this.resultCount,
     this.error,
+    this.sequence = 0,
+    this.startedAt,
+    this.isSlow = false,
+    this.context = const {},
   });
 
   final String operation;
@@ -32,12 +36,19 @@ final class DbObservation {
   final String? table;
   final String? sql;
   final int? resultCount;
+  final int sequence;
+  final DateTime? startedAt;
+  final bool isSlow;
+  final Map<String, String> context;
 
   /// The operation error, when it failed. Bound values remain excluded.
   final Object? error;
 
   /// Whether the database operation completed successfully.
   bool get succeeded => error == null;
+
+  /// Normalized SQL with inline literals removed for metric grouping.
+  String? get sqlFingerprint => _fingerprintSql(sql);
 }
 
 /// Receives timing metadata. Bound values are deliberately never included.
@@ -45,6 +56,10 @@ typedef DbObserver = void Function(DbObservation observation);
 
 /// Receives errors thrown by [DbObserver] callbacks.
 typedef DbObserverErrorHandler =
+    void Function(Object error, StackTrace stackTrace);
+
+/// Receives failures encountered while polling for external database writes.
+typedef DbExternalChangeErrorHandler =
     void Function(Object error, StackTrace stackTrace);
 
 /// Resolves an application database file path.
@@ -110,10 +125,14 @@ final class SqliteLoom {
     Database database, {
     DbObserver? observer,
     DbObserverErrorHandler? onObserverError,
+    Duration? slowQueryThreshold,
+    Map<String, String> observerContext = const {},
   }) : _root = _RootDbExecutor(
          database,
          observer: observer,
          onObserverError: onObserverError,
+         slowQueryThreshold: slowQueryThreshold,
+         observerContext: observerContext,
        );
 
   final _RootDbExecutor _root;
@@ -124,6 +143,41 @@ final class SqliteLoom {
 
   /// Emits committed change sets recorded through this instance.
   Stream<DbChangeSet> get changes => _root.changes;
+
+  /// Invalidates live queries depending on any of [tables].
+  ///
+  /// Use this after an integration writes through the raw database handle or
+  /// another abstraction that SQLite Loom cannot observe directly.
+  void invalidate(Iterable<DbTableId> tables) {
+    _root.publishRaw(tables.toSet());
+  }
+
+  /// Polls SQLite's `data_version` and invalidates [tables] after writes made
+  /// by other connections.
+  ///
+  /// Writes made through this instance already invalidate synchronously. Close
+  /// the returned monitor with the owning application lifecycle.
+  Future<DbExternalChangeMonitor> monitorExternalChanges({
+    required Iterable<DbTableId> tables,
+    Duration interval = const Duration(seconds: 1),
+    DbExternalChangeErrorHandler? onError,
+  }) async {
+    final dependencies = tables.toSet();
+    if (dependencies.isEmpty) {
+      throw ArgumentError.value(tables, 'tables', 'Cannot be empty');
+    }
+    if (interval <= Duration.zero) {
+      throw ArgumentError.value(interval, 'interval', 'Must be positive');
+    }
+    final monitor = DbExternalChangeMonitor._(
+      this,
+      Set.unmodifiable(dependencies),
+      interval,
+      onError,
+    );
+    await monitor._initialize();
+    return monitor;
+  }
 
   /// Detects features provided by the active SQLite runtime.
   Future<DbCapabilities> capabilities() => _root.capabilities();
@@ -229,6 +283,76 @@ final class SqliteLoom {
   }
 }
 
+/// A lifecycle-owned monitor for writes committed by other connections.
+final class DbExternalChangeMonitor {
+  DbExternalChangeMonitor._(
+    this._db,
+    this.tables,
+    this.interval,
+    this._onError,
+  );
+
+  final SqliteLoom _db;
+  final Set<DbTableId> tables;
+  final Duration interval;
+  final DbExternalChangeErrorHandler? _onError;
+  Timer? _timer;
+  int? _lastVersion;
+  bool _checking = false;
+  bool _closed = false;
+
+  bool get isClosed => _closed;
+
+  Future<void> _initialize() async {
+    _lastVersion = await _readVersion();
+    _timer = Timer.periodic(interval, (_) => unawaited(checkNow()));
+  }
+
+  /// Checks immediately instead of waiting for the next polling interval.
+  Future<bool> checkNow() async {
+    if (_closed || _checking) return false;
+    _checking = true;
+    try {
+      final version = await _readVersion();
+      final changed = _lastVersion != null && version != _lastVersion;
+      _lastVersion = version;
+      if (changed && !_closed) _db.invalidate(tables);
+      return changed;
+    } catch (error, stackTrace) {
+      if (!_closed && _onError != null) {
+        try {
+          _onError(error, stackTrace);
+        } catch (_) {
+          // Diagnostics must not break or terminate the polling lifecycle.
+        }
+      }
+      return false;
+    } finally {
+      _checking = false;
+    }
+  }
+
+  Future<int> _readVersion() async {
+    final rows = await _db.rawRead('PRAGMA data_version');
+    final value = rows.single.values.single;
+    if (value is! int) {
+      throw StateError('PRAGMA data_version returned ${value.runtimeType}');
+    }
+    return value;
+  }
+
+  /// Stops polling. Calling this more than once is safe.
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    _timer?.cancel();
+    _timer = null;
+    while (_checking) {
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+}
+
 /// Application initialization helpers for a migration project.
 extension SqliteLoomProjectInitialization on SqliteLoomProject {
   /// Configures [database], applies pending migrations, and returns its Loom
@@ -241,6 +365,8 @@ extension SqliteLoomProjectInitialization on SqliteLoomProject {
     DbSynchronous? synchronous,
     DbObserver? observer,
     DbObserverErrorHandler? onObserverError,
+    Duration? slowQueryThreshold,
+    Map<String, String> observerContext = const {},
   }) async {
     await configureSqliteLoomConnection(
       database,
@@ -254,6 +380,8 @@ extension SqliteLoomProjectInitialization on SqliteLoomProject {
       database,
       observer: observer,
       onObserverError: onObserverError,
+      slowQueryThreshold: slowQueryThreshold,
+      observerContext: observerContext,
     );
   }
 
@@ -267,6 +395,8 @@ extension SqliteLoomProjectInitialization on SqliteLoomProject {
     DbConnectionOptions connection = const DbConnectionOptions(),
     DbObserver? observer,
     DbObserverErrorHandler? onObserverError,
+    Duration? slowQueryThreshold,
+    Map<String, String> observerContext = const {},
   }) => SqliteLoomDatabase._(
     project: this,
     factory: factory,
@@ -277,6 +407,8 @@ extension SqliteLoomProjectInitialization on SqliteLoomProject {
     connection: connection,
     observer: observer,
     onObserverError: onObserverError,
+    slowQueryThreshold: slowQueryThreshold,
+    observerContext: observerContext,
   );
 }
 
@@ -292,6 +424,8 @@ final class SqliteLoomDatabase {
     required DbConnectionOptions connection,
     required DbObserver? observer,
     required DbObserverErrorHandler? onObserverError,
+    required Duration? slowQueryThreshold,
+    required Map<String, String> observerContext,
   }) : _project = project,
        _factory = factory,
        _factoryResolver = factoryResolver,
@@ -300,7 +434,9 @@ final class SqliteLoomDatabase {
        _pathResolver = pathResolver,
        _connection = connection,
        _observer = observer,
-       _onObserverError = onObserverError {
+       _onObserverError = onObserverError,
+       _slowQueryThreshold = slowQueryThreshold,
+       _observerContext = Map.unmodifiable(observerContext) {
     if ((factory == null) == (factoryResolver == null)) {
       throw ArgumentError('Provide exactly one of factory or factoryResolver');
     }
@@ -332,6 +468,8 @@ final class SqliteLoomDatabase {
   final DbConnectionOptions _connection;
   final DbObserver? _observer;
   final DbObserverErrorHandler? _onObserverError;
+  final Duration? _slowQueryThreshold;
+  final Map<String, String> _observerContext;
 
   SqliteLoom? _loom;
   Future<SqliteLoom>? _opening;
@@ -392,6 +530,8 @@ final class SqliteLoomDatabase {
         synchronous: options.synchronous,
         observer: _observer,
         onObserverError: _onObserverError,
+        slowQueryThreshold: _slowQueryThreshold,
+        observerContext: _observerContext,
       );
       _loom = loom;
       return loom;
@@ -537,17 +677,41 @@ bool _rawValueEqual(Object? left, Object? right) {
   return left == right;
 }
 
+String? _fingerprintSql(String? sql) {
+  if (sql == null) return null;
+  return sql
+      .replaceAll(RegExp("'(?:''|[^'])*'"), "'?'")
+      .replaceAll(RegExp(r'\b\d+(?:\.\d+)?\b'), '?')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+}
+
 final class _RootDbExecutor implements DbExecutorAdapter {
   _RootDbExecutor(
     this.database, {
     DbObserver? observer,
     DbObserverErrorHandler? onObserverError,
+    Duration? slowQueryThreshold,
+    Map<String, String> observerContext = const {},
   }) : _observer = observer,
-       _onObserverError = onObserverError;
+       _onObserverError = onObserverError,
+       _slowQueryThreshold = slowQueryThreshold,
+       _observerContext = Map.unmodifiable(observerContext) {
+    if (slowQueryThreshold != null && slowQueryThreshold.isNegative) {
+      throw ArgumentError.value(
+        slowQueryThreshold,
+        'slowQueryThreshold',
+        'Cannot be negative',
+      );
+    }
+  }
 
   final Database database;
   final DbObserver? _observer;
   final DbObserverErrorHandler? _onObserverError;
+  final Duration? _slowQueryThreshold;
+  final Map<String, String> _observerContext;
+  int _observationSequence = 0;
   Future<DbCapabilities>? _capabilities;
   final StreamController<DbChangeSet> _changes =
       StreamController<DbChangeSet>.broadcast(sync: true);
@@ -741,6 +905,8 @@ final class _RootDbExecutor implements DbExecutorAdapter {
     String? sql,
     int Function(T value)? count,
   }) async {
+    final sequence = _observationSequence++;
+    final startedAt = DateTime.now().toUtc();
     final stopwatch = Stopwatch()..start();
     try {
       final value = await action();
@@ -752,6 +918,12 @@ final class _RootDbExecutor implements DbExecutorAdapter {
           table: table,
           sql: sql,
           resultCount: count?.call(value),
+          sequence: sequence,
+          startedAt: startedAt,
+          isSlow:
+              _slowQueryThreshold != null &&
+              stopwatch.elapsed >= _slowQueryThreshold,
+          context: _observerContext,
         ),
       );
       return value;
@@ -764,6 +936,12 @@ final class _RootDbExecutor implements DbExecutorAdapter {
           table: table,
           sql: sql,
           error: error,
+          sequence: sequence,
+          startedAt: startedAt,
+          isSlow:
+              _slowQueryThreshold != null &&
+              stopwatch.elapsed >= _slowQueryThreshold,
+          context: _observerContext,
         ),
       );
       rethrow;

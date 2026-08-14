@@ -18,6 +18,7 @@ export 'src/model/expression.dart';
 export 'src/query/join.dart';
 export 'src/migration/migration.dart';
 export 'src/query/query.dart';
+export 'src/query/relationship.dart';
 export 'src/model/row.dart';
 export 'src/migration/schema.dart';
 export 'src/model/table.dart';

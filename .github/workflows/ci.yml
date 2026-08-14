@@ -28,4 +28,6 @@ jobs:
       - if: matrix.os == 'ubuntu-latest' && matrix.sdk == 'stable'
         run: dart run benchmark/bulk_writes.dart 10000 10000
       - if: matrix.os == 'ubuntu-latest' && matrix.sdk == 'stable'
-        run: dart doc
+        run: dart doc --validate-links
+      - if: matrix.os == 'ubuntu-latest' && matrix.sdk == 'stable'
+        run: dart pub publish --dry-run

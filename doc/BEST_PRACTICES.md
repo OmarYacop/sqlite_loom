@@ -44,6 +44,8 @@
 - Use `after`/`before` keyset cursors instead of large offsets.
 - Use `pluck(column)` or `select([column1, column2, ...])` when a read does not
   need a complete model.
+- Declare `DbHasMany`, `DbHasOne`, and `DbBelongsTo` relationships next to table
+  mappings. Prefer `loadAll` when hydrating a list to avoid N+1 reads.
 - Use `insertAll` and `upsertAll` so bulk writes execute as SQLite batches.
 - Set `batchSize` for very large inputs and wrap chunks in a transaction when
   the entire operation must be atomic.
@@ -54,6 +56,9 @@
 - Remember that `allRows()` is an explicit safety escape hatch, not a default.
 - Include all affected tables when using `rawWrite`, including tables changed by
   triggers when their live queries must refresh.
+- Call `invalidate` after writes through a retained raw handle. Use
+  `monitorExternalChanges` only when other connections can commit writes, and
+  close its monitor with the database lifecycle.
 - Inspect `await db.capabilities()` when an application needs optional SQLite
   behavior across different platform builds.
 

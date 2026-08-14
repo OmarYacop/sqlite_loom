@@ -17,7 +17,7 @@ name: loom_fixture
 environment:
   sdk: ^3.9.0
 dependencies:
-  sqlite_loom: ^0.3.0
+  sqlite_loom: ^0.4.0
 dev_dependencies:
   sqflite_common_ffi: ^2.3.6
 ''');
@@ -330,7 +330,7 @@ database:
       expect(executable, Platform.resolvedExecutable);
       expect(arguments, [
         'run',
-        p.join(project.path, 'tool/database.dart'),
+        p.join(project.path, 'tool', 'database.dart'),
         'migrate',
         '--to',
         '7',
@@ -362,7 +362,7 @@ database:
     );
     expect(arguments, [
       'run',
-      p.join(project.path, 'tool/database.dart'),
+      p.join(project.path, 'tool', 'database.dart'),
       'status',
       '--json',
     ]);
@@ -390,7 +390,7 @@ database:
     );
     expect(arguments, [
       'run',
-      p.join(project.path, 'tool/database.dart'),
+      p.join(project.path, 'tool', 'database.dart'),
       'db:browse',
       'users',
       '--limit',

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -216,6 +217,7 @@ void main() {
       await db.chats.where(ChatsTable.note.notInValues(const [null])).count(),
       1,
     );
+    expect(await db.chats.where(ChatsTable.note.lessThan('z')).count(), 1);
   });
 
   test('insert publishes changed primary keys', () async {
@@ -232,6 +234,90 @@ void main() {
     final change = await changeFuture;
     expect(change[const ChatsTable().tableId]?.keys, {7});
   });
+
+  test(
+    'manual invalidation refreshes writes made through a raw handle',
+    () async {
+      final emissions = <List<Chat>>[];
+      final refreshed = Completer<List<Chat>>();
+      final subscription = db.chats.watch().listen((rows) {
+        emissions.add(rows);
+        if (emissions.length == 2) refreshed.complete(rows);
+      });
+      while (emissions.isEmpty) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      await database.insert('chats', {
+        'id': 9,
+        'title': 'External abstraction',
+        'archived': 0,
+        'updated_at': DateTime.utc(2026, 7, 17).millisecondsSinceEpoch,
+      });
+
+      db.invalidate({const ChatsTable().tableId});
+
+      expect((await refreshed.future).single.id, 9);
+      await subscription.cancel();
+    },
+  );
+
+  test(
+    'data-version monitor refreshes writes from another connection',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('loom_external_');
+      final path = '${directory.path}/external.sqlite';
+      final first = await databaseFactoryFfi.openDatabase(
+        path,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final second = await databaseFactoryFfi.openDatabase(
+        path,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final loom = SqliteLoom(first);
+      DbExternalChangeMonitor? monitor;
+      StreamSubscription<List<Chat>>? subscription;
+      try {
+        await first.execute('''
+        CREATE TABLE chats (
+          id INTEGER PRIMARY KEY,
+          title TEXT NOT NULL,
+          note TEXT,
+          archived INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
+        monitor = await loom.monitorExternalChanges(
+          tables: {const ChatsTable().tableId},
+          interval: const Duration(hours: 1),
+        );
+        final emissions = <List<Chat>>[];
+        final refreshed = Completer<List<Chat>>();
+        subscription = loom.chats.watch().listen((rows) {
+          emissions.add(rows);
+          if (emissions.length == 2) refreshed.complete(rows);
+        });
+        while (emissions.isEmpty) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        await second.insert('chats', {
+          'id': 10,
+          'title': 'Other connection',
+          'archived': 0,
+          'updated_at': DateTime.utc(2026, 7, 17).millisecondsSinceEpoch,
+        });
+
+        expect(await monitor.checkNow(), isTrue);
+        expect((await refreshed.future).single.id, 10);
+      } finally {
+        await subscription?.cancel();
+        await monitor?.close();
+        await loom.close();
+        await second.close();
+        await directory.delete(recursive: true);
+      }
+    },
+  );
 
   test(
     'update and delete require explicit allRows for whole-table mutation',
@@ -429,6 +515,46 @@ void main() {
     expect(await db.chats.maximum(ChatsTable.id), 3);
   });
 
+  test(
+    'grouped selections expose typed aggregates, having, and plans',
+    () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      await db.chats.insertAll([
+        Chat(id: 1, title: 'One', archived: false, updatedAt: now),
+        Chat(id: 2, title: 'Two', archived: false, updatedAt: now),
+        Chat(id: 3, title: 'Three', archived: true, updatedAt: now),
+      ]);
+      final rowCount = DbAggregate.count(as: 'row_count');
+      final latest = DbAggregate.maximum(
+        ChatsTable.updatedAt,
+        as: 'latest_update',
+      );
+      final selection = db.chats
+          .groupBy([ChatsTable.archived])
+          .having(DbPredicate.trusted('COUNT(*) >= ?', [2]))
+          .orderBy(const DbOrdering.trusted('row_count DESC'))
+          .select([ChatsTable.archived, rowCount, latest]);
+
+      final rows = await selection.get();
+
+      expect(rows, hasLength(1));
+      expect(rows.single.get(ChatsTable.archived), isFalse);
+      expect(rows.single.get(rowCount.resultColumn), 2);
+      expect(rows.single.get(latest.resultColumn), now.toLocal());
+      expect(await selection.count(), 1);
+      expect(selection.compile().sql, contains('HAVING'));
+      expect(await selection.explain(), isNotEmpty);
+
+      final paged = db.chats
+          .groupBy([ChatsTable.archived])
+          .orderBy(ChatsTable.archived.ascending())
+          .limit(1)
+          .select([ChatsTable.archived, rowCount]);
+      expect(await paged.get(), hasLength(1));
+      expect(await paged.count(), 2);
+    },
+  );
+
   test('select projects multiple columns into typed rows', () async {
     final now = DateTime.utc(2026, 7, 17, 12);
     await db.chats.insert(
@@ -537,6 +663,9 @@ void main() {
       await schema.createTable('metrics', (table) {
         table.integer('id').primaryKey();
         table.integer('score').notNull();
+        table
+            .integer('double_score')
+            .generatedAs(const DbSqlLiteral('score * 2'), stored: true);
         table.text('note');
         table.check('score >= 0');
       }, strict: true);
@@ -551,6 +680,7 @@ void main() {
       expect(await database.query('positive_metrics'), [
         {'id': 1},
       ]);
+      expect((await database.query('metrics')).single['double_score'], 4);
       await expectLater(
         database.insert('metrics', {'id': 2, 'score': -1}),
         throwsA(anything),
@@ -559,18 +689,60 @@ void main() {
     },
   );
 
+  test('schema helpers create expression indexes and triggers', () async {
+    final schema = DbSchema(database);
+    await schema.createTable('audit', (table) {
+      table.id();
+      table.text('message').notNull();
+    });
+    await schema.createExpressionIndex('idx_chats_lower_title', 'chats', const [
+      DbSqlLiteral('lower(title)'),
+    ]);
+    await schema.createTrigger(
+      'trg_chats_audit',
+      'chats',
+      timing: DbTriggerTiming.after,
+      event: DbTriggerEvent.insert,
+      body: const DbSqlLiteral(
+        "INSERT INTO audit(message) VALUES ('chat inserted')",
+      ),
+    );
+
+    await db.chats.insert(
+      Chat(
+        id: 1,
+        title: 'Tracked',
+        archived: false,
+        updatedAt: DateTime.utc(2026, 7, 17),
+      ),
+    );
+
+    expect((await database.query('audit')).single['message'], 'chat inserted');
+    await schema.dropTrigger('trg_chats_audit');
+  });
+
   test('observer reports timings without bound arguments', () async {
     final observations = <DbObservation>[];
     final observedDatabase = await databaseFactoryFfi.openDatabase(
       inMemoryDatabasePath,
     );
-    final observed = SqliteLoom(observedDatabase, observer: observations.add);
+    final observed = SqliteLoom(
+      observedDatabase,
+      observer: observations.add,
+      slowQueryThreshold: Duration.zero,
+      observerContext: const {'database': 'test'},
+    );
     await observed.rawRead('SELECT ? AS secret', arguments: ['hidden']);
 
     expect(observations, hasLength(1));
     expect(observations.single.operation, 'query');
     expect(observations.single.sql, 'SELECT ? AS secret');
+    expect(observations.single.sqlFingerprint, 'SELECT ? AS secret');
     expect(observations.single.resultCount, 1);
+    expect(observations.single.sequence, 0);
+    expect(observations.single.startedAt, isNotNull);
+    expect(observations.single.isSlow, isTrue);
+    expect(observations.single.context, {'database': 'test'});
     await observed.close();
   });
 
@@ -782,6 +954,37 @@ void main() {
     );
   });
 
+  test('runtime schema validation checks indexes and foreign keys', () async {
+    await database.execute(
+      'CREATE TABLE parents (id INTEGER PRIMARY KEY) STRICT',
+    );
+    await database.execute('''
+      CREATE TABLE validated_children (
+        id INTEGER PRIMARY KEY,
+        parent_id INTEGER NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+        name TEXT NOT NULL
+      ) STRICT
+    ''');
+    await database.execute(
+      'CREATE UNIQUE INDEX idx_validated_child_name '
+      'ON validated_children(name)',
+    );
+
+    final valid = await DbSchema(
+      database,
+    ).validate([const _ValidatedChildTable()]);
+    await database.execute('DROP INDEX idx_validated_child_name');
+    final invalid = await DbSchema(
+      database,
+    ).validate([const _ValidatedChildTable()]);
+
+    expect(valid.isValid, isTrue);
+    expect(
+      invalid.issues.any((issue) => issue.message.contains('index')),
+      isTrue,
+    );
+  });
+
   test(
     'returning writes and optimistic versions avoid follow-up reads',
     () async {
@@ -843,24 +1046,183 @@ void main() {
         Chat(id: 1, title: 'Joined', archived: false, updatedAt: now),
       );
       await database.insert('tags', {'id': 5, 'chat_id': 1, 'label': 'work'});
+      await database.insert('tags', {'id': 6, 'chat_id': 1, 'label': 'home'});
+      await database.insert('tags', {'id': 7, 'chat_id': 1, 'label': 'work'});
       final chatId = DbJoinColumn('c', ChatsTable.id);
       final tagChatId = DbJoinColumn('t', TagsTable.chatId);
       final label = DbJoinColumn('t', TagsTable.label);
 
-      final rows = await db
+      final selection = db
           .joinFrom(const ChatsTable(), as: 'c')
           .innerJoin(
             const TagsTable(),
             as: 't',
             on: chatId.equalsColumn(tagChatId),
           )
-          .select([chatId, label])
+          .orderBy(label.descending())
+          .limit(2)
+          .select([chatId, label]);
+      final rows = await selection.get();
+      final decoded = await selection
+          .decodeWith((row) => row.get(label.resultColumn))
+          .get();
+      final distinct = await db
+          .joinFrom(const ChatsTable(), as: 'c')
+          .innerJoin(
+            const TagsTable(),
+            as: 't',
+            on: chatId.equalsColumn(tagChatId),
+          )
+          .distinct()
+          .orderBy(label.ascending())
+          .select([label])
           .get();
 
-      expect(rows.single.get(chatId.resultColumn), 1);
-      expect(rows.single.get(label.resultColumn), 'work');
+      expect(rows.map((row) => row.get(chatId.resultColumn)), [1, 1]);
+      expect(decoded, ['work', 'work']);
+      expect(distinct.map((row) => row.get(label.resultColumn)), [
+        'home',
+        'work',
+      ]);
+      expect(await selection.count(), 3);
+      expect(await selection.exists(), isTrue);
+      expect(selection.compile().sql, contains('ORDER BY'));
+      expect(await selection.explain(), isNotEmpty);
     },
   );
+
+  test(
+    'typed relationships load and group related rows without N+1 reads',
+    () async {
+      await database.execute(
+        'CREATE TABLE tags (id INTEGER PRIMARY KEY, chat_id INTEGER, label TEXT)',
+      );
+      await database.execute(
+        'CREATE TABLE notes ('
+        'id INTEGER PRIMARY KEY, chat_id INTEGER, marker TEXT, body TEXT)',
+      );
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final chats = [
+        Chat(id: 1, title: 'One', archived: false, updatedAt: now),
+        Chat(id: 2, title: 'Two', archived: false, updatedAt: now),
+        Chat(id: 3, title: 'Empty', archived: false, updatedAt: now),
+      ];
+      await db.chats.insertAll(chats);
+      await db.table(const TagsTable()).insertAll([
+        {'id': 1, 'chat_id': 1, 'label': 'b'},
+        {'id': 2, 'chat_id': 1, 'label': 'a'},
+        {'id': 3, 'chat_id': 2, 'label': 'c'},
+      ]);
+      await db.table(const NotesTable()).insertAll([
+        {'id': 10, 'chat_id': 1, 'marker': 'd', 'body': 'first'},
+        {'id': 11, 'chat_id': 2, 'marker': 'b', 'body': 'second'},
+        {'id': 12, 'chat_id': 3, 'marker': 'z', 'body': 'third'},
+      ]);
+      final tags = DbHasMany<Chat, int, Map<String, Object?>, int>(
+        parent: ChatsTable(),
+        children: TagsTable(),
+        foreignKey: TagsTable.chatId,
+        foreignKeyOf: _tagChatId,
+      );
+      final chat = DbBelongsTo<Map<String, Object?>, int, Chat, int>(
+        source: TagsTable(),
+        target: ChatsTable(),
+        foreignKey: TagsTable.chatId,
+        foreignKeyOf: _tagChatId,
+      );
+      final notes = DbHasMany<Chat, int, Map<String, Object?>, int>(
+        parent: ChatsTable(),
+        children: NotesTable(),
+        foreignKey: NotesTable.chatId,
+        foreignKeyOf: _noteChatId,
+      );
+      final timeline = DbMergedRelationships<Chat, int, String>([
+        dbMergedRelationshipSource(
+          relationship: tags,
+          cursorColumn: TagsTable.label,
+          convert: (row) => 'tag:${row['label']}',
+        ),
+        dbMergedRelationshipSource(
+          relationship: notes,
+          cursorColumn: NotesTable.marker,
+          convert: (row) => 'note:${row['marker']}:${row['body']}',
+        ),
+      ]);
+
+      final grouped = await tags.loadAll(
+        db,
+        chats,
+        transform: (query) => query.orderBy(TagsTable.label.ascending()),
+      );
+      final limited = await tags.loadAllLimited(
+        db,
+        chats,
+        limit: 1,
+        batchSize: 1,
+        transform: (query) => query.orderBy(TagsTable.label.descending()),
+      );
+      final batched = await tags.loadAllBatched(
+        db,
+        chats,
+        batchSize: 1,
+        transform: (query) => query.orderBy(TagsTable.label.ascending()),
+      );
+      final owners = await chat.loadAll(
+        db,
+        await db.table(const TagsTable()).get(),
+      );
+      final merged = await timeline.load(db, chats, limit: 2);
+      final older = await timeline.loadKeys(
+        db,
+        [1, 2, 3],
+        limit: 2,
+        cursor: const DbMergedCursorBound.before('c'),
+      );
+
+      expect(grouped[1]!.map((row) => row['label']), ['a', 'b']);
+      expect(grouped[2]!.map((row) => row['label']), ['c']);
+      expect(grouped[3], isEmpty);
+      expect(limited[1]!.single['label'], 'b');
+      expect(limited[2]!.single['label'], 'c');
+      expect(limited[3], isEmpty);
+      expect(batched[1]!.map((row) => row['label']), ['a', 'b']);
+      expect(batched[2]!.map((row) => row['label']), ['c']);
+      expect(batched[3], isEmpty);
+      expect(merged[1], ['note:d:first', 'tag:b']);
+      expect(merged[2], ['tag:c', 'note:b:second']);
+      expect(merged[3], ['note:z:third']);
+      expect(older[1], ['tag:b', 'tag:a']);
+      expect(older[2], ['note:b:second']);
+      expect(older[3], isEmpty);
+      expect(owners[1]?.title, 'One');
+      expect(owners[3]?.title, 'Two');
+    },
+  );
+
+  test('has-one relationships reject duplicate related rows', () async {
+    await database.execute(
+      'CREATE TABLE tags (id INTEGER PRIMARY KEY, chat_id INTEGER, label TEXT)',
+    );
+    final chat = Chat(
+      id: 1,
+      title: 'One',
+      archived: false,
+      updatedAt: DateTime.utc(2026, 7, 17, 12),
+    );
+    await db.chats.insert(chat);
+    await db.table(const TagsTable()).insertAll([
+      {'id': 1, 'chat_id': 1, 'label': 'a'},
+      {'id': 2, 'chat_id': 1, 'label': 'b'},
+    ]);
+    final featuredTag = DbHasOne<Chat, int, Map<String, Object?>, int>(
+      parent: ChatsTable(),
+      related: TagsTable(),
+      foreignKey: TagsTable.chatId,
+      foreignKeyOf: _tagChatId,
+    );
+
+    await expectLater(featuredTag.load(db, chat), throwsStateError);
+  });
 
   test('composite key predicates combine typed key parts', () async {
     final now = DateTime.utc(2026, 7, 17, 12);
@@ -973,6 +1335,8 @@ final class TagsTable extends DbTable<Map<String, Object?>, int> {
   static final label = text('label');
 
   @override
+  Iterable<AnyDbColumn> get columns => [id, chatId, label];
+  @override
   String get tableName => 'tags';
   @override
   DbColumn<int> get primaryKey => id;
@@ -983,6 +1347,31 @@ final class TagsTable extends DbTable<Map<String, Object?>, int> {
   @override
   int keyOf(Map<String, Object?> row) => row['id']! as int;
 }
+
+int _tagChatId(Map<String, Object?> row) => row['chat_id']! as int;
+
+final class NotesTable extends DbTable<Map<String, Object?>, int> {
+  const NotesTable();
+  static final id = integer('id');
+  static final chatId = integer('chat_id');
+  static final marker = text('marker');
+  static final body = text('body');
+
+  @override
+  Iterable<AnyDbColumn> get columns => [id, chatId, marker, body];
+  @override
+  String get tableName => 'notes';
+  @override
+  DbColumn<int> get primaryKey => id;
+  @override
+  Map<String, Object?> decode(DbRow row) => row.asMap;
+  @override
+  DbValues encode(Map<String, Object?> row) => DbValues.raw(row);
+  @override
+  int keyOf(Map<String, Object?> row) => row['id']! as int;
+}
+
+int _noteChatId(Map<String, Object?> row) => row['chat_id']! as int;
 
 final class _InvalidPrimaryKeyTable extends DbTable<Map<String, Object?>, int> {
   const _InvalidPrimaryKeyTable();
@@ -1015,6 +1404,47 @@ final class _InvalidNullabilityTable
   DbColumn<int> get primaryKey => id;
   @override
   Iterable<AnyDbColumn> get columns => [id, name];
+  @override
+  Map<String, Object?> decode(DbRow row) => row.asMap;
+  @override
+  DbValues encode(Map<String, Object?> row) => DbValues.raw(row);
+  @override
+  int keyOf(Map<String, Object?> row) => row['id']! as int;
+}
+
+final class _ValidatedChildTable extends DbTable<Map<String, Object?>, int> {
+  const _ValidatedChildTable();
+
+  static final id = integer('id');
+  static final parentId = integer('parent_id');
+  static final name = text('name');
+
+  @override
+  String get tableName => 'validated_children';
+  @override
+  DbColumn<int> get primaryKey => id;
+  @override
+  Iterable<AnyDbColumn> get columns => [id, parentId, name];
+  @override
+  DbTableSchema get schema => const DbTableSchema(
+    strict: true,
+    withoutRowId: false,
+    foreignKeys: [
+      DbForeignKeyExpectation(
+        columns: ['parent_id'],
+        referencesTable: 'parents',
+        referencesColumns: ['id'],
+        onDelete: 'CASCADE',
+      ),
+    ],
+    indexes: [
+      DbIndexExpectation(
+        name: 'idx_validated_child_name',
+        columns: ['name'],
+        unique: true,
+      ),
+    ],
+  );
   @override
   Map<String, Object?> decode(DbRow row) => row.asMap;
   @override

@@ -1,6 +1,6 @@
 # Public API contract
 
-This document freezes the candidate `0.2.x` API categories ahead of 1.0. The
+This document freezes the candidate `0.4.x` API categories ahead of 1.0. The
 compile-time fixture in `test/public_api_compatibility_test.dart` protects the
 most compatibility-sensitive generic signatures; dartdoc generation audits the
 complete exported surface.
@@ -13,8 +13,15 @@ complete exported surface.
   projection builders
 - typed predicates, ordering, aggregates, keyset pagination, returning writes,
   optimistic updates, batches, transactions, savepoints, and live queries
+- typed grouped aggregates, full joined-selection operations, and explicit
+  has-many, has-one, and belongs-to relationship descriptors with bind-safe
+  batching and independently limited child pages per parent
+- typed heterogeneous merged relationships with cross-table cursor ordering,
+  deterministic tie-breaking, per-parent limits, and cursor pagination
 - migrations, schema definitions, runtime schema validation, capability
   detection, testing harnesses, and the application-owned migration CLI
+- explicit invalidation, external-connection monitoring, and structured
+  observation metadata
 
 Changing a public name, generic parameter, return type, required parameter, or
 behavioral invariant in this surface is breaking. During pre-1.0 development it
