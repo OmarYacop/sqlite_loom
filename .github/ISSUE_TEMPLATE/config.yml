@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage and API documentation
+    url: https://github.com/OmarYacop/sqlite_loom#readme
+    about: Check the package documentation before filing an issue.
+  - name: Security vulnerability
+    url: https://github.com/OmarYacop/sqlite_loom/security/policy
+    about: Report vulnerabilities privately; do not open a public issue.

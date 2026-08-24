@@ -1,0 +1,9 @@
+# Default owner and reviewer for SQLite Loom.
+* @OmarYacop
+
+# Repository automation and governance are security-sensitive.
+/.github/ @OmarYacop
+/AGENTS.md @OmarYacop
+/SECURITY.md @OmarYacop
+/doc/decisions/ @OmarYacop
+/tool/ @OmarYacop

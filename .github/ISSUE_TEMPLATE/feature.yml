@@ -1,0 +1,83 @@
+name: Feature
+description: Propose a new capability or a material change to existing behavior.
+title: "[feature] "
+labels:
+  - "type:feat"
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: State the capability in one or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation and use case
+      description: What becomes safer, simpler, or possible? Include a concrete caller example.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: areas
+    attributes:
+      label: Affected areas
+      multiple: true
+      options:
+        - core
+        - queries
+        - migrations
+        - reactivity
+        - cli
+        - docs
+        - ci
+        - governance
+        - suite-integration
+        - other (explain below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-scope
+    attributes:
+      label: Proposed scope
+      description: Describe the smallest useful version, including its public API shape when applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Explicitly out of scope
+      description: Record adjacent work that this issue will not include.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Explain source, runtime, migration, SQLite-version, and sqlite_loom_suite impact. Write "None" where applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] Public behavior is tested
+        - [ ] Public API and CHANGELOG are updated
+        - [ ] Consumer compatibility is verified
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: architecture
+    attributes:
+      label: Architecture check
+      options:
+        - label: This proposal is consistent with doc/ARCHITECTURE.md and doc/ROADMAP_1_0.md; otherwise I will open an Architecture decision issue.
+          required: true
