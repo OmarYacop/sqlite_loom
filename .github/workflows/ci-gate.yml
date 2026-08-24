@@ -1,0 +1,90 @@
+name: CI Gate
+
+# Configure branch protection to require only "CI Gate / gate". This workflow
+# always starts; no required check depends on a path-filtered trigger.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-policy:
+    name: Repository policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify repository policy
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: ./tool/ci policy
+
+  dart:
+    name: Dart ${{ matrix.sdk }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        sdk: ['3.12.0', stable]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        with:
+          sdk: ${{ matrix.sdk }}
+      - name: Install dependencies
+        run: dart pub get
+      - name: Run package checks
+        run: dart run tool/ci.dart core
+
+  package:
+    name: Package and documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up stable Dart
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        with:
+          sdk: stable
+      - name: Install dependencies
+        run: dart pub get
+      - name: Validate documentation, benchmark, and package
+        run: ./tool/ci release-check
+
+  gate:
+    name: gate
+    if: always()
+    needs: [repository-policy, dart, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          POLICY_RESULT: ${{ needs.repository-policy.result }}
+          DART_RESULT: ${{ needs.dart.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          set -euo pipefail
+          for result in "$POLICY_RESULT" "$DART_RESULT" "$PACKAGE_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "A required CI job ended with: $result"
+              exit 1
+            fi
+          done

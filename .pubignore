@@ -1,6 +1,11 @@
 .dart_tool/
 .github/
+AGENTS.md
+CONTRIBUTING.md
 build/
 coverage/
 doc/api/
+doc/DEVELOPMENT_WORKFLOW.md
+doc/decisions/
 pubspec.lock
+tool/

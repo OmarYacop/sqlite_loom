@@ -1,5 +1,8 @@
 # SQLite Loom context for AI coding assistants
 
+Before changing the repository, read the operational rules in `AGENTS.md` and the issue, label,
+branch, CI, release, and stacked-PR process in `doc/DEVELOPMENT_WORKFLOW.md`.
+
 SQLite Loom is a generator-free reactive SQLite layer for Dart and Flutter. It
 wraps a caller-owned `sqflite_common` `Database`; it does not open database
 files, generate models, or infer schema.

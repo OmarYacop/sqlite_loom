@@ -1,0 +1,57 @@
+name: Architecture decision
+description: Propose a decision that is expensive to reverse or changes an established project constraint.
+title: "[adr] "
+labels:
+  - "status:needs-decision"
+  - "area:governance"
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Decision needed
+      description: State one question a reviewer can answer by choosing an option.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Explain what forces the decision now and link the relevant architecture, roadmap, issue, or compatibility contract.
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Existing constraints affected
+      description: Identify any public API, generator-free, database-ownership, migration, or compatibility decision this would revisit.
+    validations:
+      required: true
+
+  - type: textarea
+    id: options
+    attributes:
+      label: Options and tradeoffs
+      placeholder: |
+        1. Option A — consequences and risks
+        2. Option B — consequences and risks
+    validations:
+      required: true
+
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria for decided
+      placeholder: |
+        - [ ] ADR merged under doc/decisions/
+        - [ ] Affected contracts and guidance updated
+    validations:
+      required: true

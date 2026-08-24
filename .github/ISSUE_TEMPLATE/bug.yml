@@ -1,0 +1,87 @@
+name: Bug
+description: Report behavior that differs from SQLite Loom's documented contract.
+title: "[bug] "
+labels:
+  - "type:bug"
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the incorrect behavior in one or two sentences.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: areas
+    attributes:
+      label: Affected areas
+      multiple: true
+      options:
+        - core
+        - queries
+        - migrations
+        - reactivity
+        - cli
+        - docs
+        - ci
+        - governance
+        - suite-integration
+        - other (explain below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest complete Dart example, schema, and data needed to reproduce the problem.
+      render: dart
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the full error and stack trace after removing credentials and private data.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: SQLite Loom version, Dart/Flutter version, sqflite backend, OS, and SQLite version when known.
+      placeholder: "sqlite_loom 0.4.0; Dart 3.12.0; sqflite_common_ffi; macOS"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      options:
+        - Blocks a release or causes data loss/corruption risk
+        - Incorrect behavior with no practical workaround
+        - Incorrect behavior with a workaround
+        - Minor or cosmetic
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria for fixed
+      placeholder: |
+        - [ ] Regression test fails before and passes after the fix
+        - [ ] Relevant documentation is updated
+    validations:
+      required: true

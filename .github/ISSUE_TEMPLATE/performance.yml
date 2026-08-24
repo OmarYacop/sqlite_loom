@@ -1,0 +1,46 @@
+name: Performance regression
+description: Report a measured latency, throughput, allocation, or database-size regression.
+title: "[perf] "
+labels:
+  - "type:perf"
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+
+  - type: textarea
+    id: workload
+    attributes:
+      label: Reproducible workload
+      description: Include schema, row counts, operation counts, warm-up, and the exact command or benchmark.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Before and after evidence
+      description: Provide repeated measurements, versions/commits, and enough raw output to evaluate variance.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Dart/Flutter, backend, OS, hardware, SQLite, and build mode.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] Regression is represented by a stable benchmark or test
+        - [ ] Improvement is demonstrated across repeated runs
+    validations:
+      required: true

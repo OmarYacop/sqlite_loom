@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: pub
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "type:build"
+      - "priority:p3"
+    groups:
+      dart-development-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "type:ci"
+      - "area:ci"
+      - "priority:p3"
