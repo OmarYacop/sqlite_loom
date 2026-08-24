@@ -2,6 +2,8 @@ import 'dart:io';
 
 const _branchPattern =
     r'^(feat|fix|hotfix|refactor|perf|security|docs|test|ci|build|chore|release)/([0-9]+-)?[a-z0-9]+(-[a-z0-9]+)*$';
+const _dependabotBranchPattern =
+    r'^dependabot/(pub|github_actions)/[A-Za-z0-9._+/-]+$';
 
 Future<void> main(List<String> arguments) async {
   try {
@@ -110,7 +112,11 @@ Future<void> _policy() async {
       ? headRef
       : await _capture('git', ['branch', '--show-current']);
   if (branch.isNotEmpty && branch != 'main') {
-    if (!RegExp(_branchPattern).hasMatch(branch)) {
+    final actor = Platform.environment['GITHUB_ACTOR'];
+    final isDependabotBranch =
+        actor == 'dependabot[bot]' &&
+        RegExp(_dependabotBranchPattern).hasMatch(branch);
+    if (!RegExp(_branchPattern).hasMatch(branch) && !isDependabotBranch) {
       stderr.writeln(
         'Branch "$branch" must match '
         '<type>/<issue>-<short-kebab-description>.',

@@ -104,6 +104,10 @@ The issue segment is optional only for small untracked maintenance. Allowed bran
 `type:*` taxonomy. Commit subjects use Conventional Commits (`feat:`, `fix:`, `docs:`, `ci:`, and
 so on). A PR should make one reviewable argument even when it contains several commits.
 
+Dependabot branches are the sole automation exception. Repository policy accepts its generated
+`dependabot/pub/...` and `dependabot/github_actions/...` names only when GitHub identifies the
+workflow actor as `dependabot[bot]`; human-authored branches still use the convention above.
+
 ## Pull requests
 
 Open PRs as drafts until their own checks pass. The bottom PR normally targets `main`. Fill in the
@@ -181,9 +185,10 @@ and link an existing linear PR chain from the web interface.
 ## CI and branch protection
 
 `.github/workflows/ci-gate.yml` always runs for pull requests, pushes to `main`, and merge queue
-candidates. Its final stable check is **`CI Gate / gate`**. Configure branch protection to require
-that one check rather than an internal matrix job. The aggregate fails when policy, Dart, package,
-or documentation validation fails and cannot become permanently pending because of path filters.
+candidates. Its final stable check context is **`gate`** from the **CI Gate** workflow. Configure
+branch protection to require that exact context rather than an internal matrix job. The aggregate
+fails when policy, Dart, package, or documentation validation fails and cannot become permanently
+pending because of path filters.
 
 Workflows use read-only repository permissions, explicit timeouts, concurrency cancellation, and
 full commit SHA pins for third-party Actions. Pull-request workflows receive no publishing secret.
@@ -218,7 +223,7 @@ do not introduce a long-lived pub.dev token.
 Committed files cannot configure every GitHub setting. A repository administrator should verify:
 
 - default branch `main` is protected;
-- pull requests and `CI Gate / gate` are required before merge;
+- pull requests and the `gate` check from the CI Gate workflow are required before merge;
 - force pushes and branch deletion are blocked on `main`;
 - stale approvals are dismissed after new changes when more than one reviewer is available;
 - the merge queue is enabled if the account plan supports it;
