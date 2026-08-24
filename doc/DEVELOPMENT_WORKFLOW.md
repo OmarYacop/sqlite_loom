@@ -104,6 +104,10 @@ The issue segment is optional only for small untracked maintenance. Allowed bran
 `type:*` taxonomy. Commit subjects use Conventional Commits (`feat:`, `fix:`, `docs:`, `ci:`, and
 so on). A PR should make one reviewable argument even when it contains several commits.
 
+Dependabot branches are the sole automation exception. Repository policy accepts its generated
+`dependabot/pub/...` and `dependabot/github_actions/...` names only when GitHub identifies the
+workflow actor as `dependabot[bot]`; human-authored branches still use the convention above.
+
 ## Pull requests
 
 Open PRs as drafts until their own checks pass. The bottom PR normally targets `main`. Fill in the
