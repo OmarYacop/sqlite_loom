@@ -1,6 +1,7 @@
 name: CI Gate
 
-# Configure branch protection to require only "CI Gate / gate". This workflow
+# Configure branch protection to require only the check context "gate" from
+# this "CI Gate" workflow. This workflow
 # always starts; no required check depends on a path-filtered trigger.
 on:
   pull_request:
