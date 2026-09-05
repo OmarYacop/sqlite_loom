@@ -52,4 +52,7 @@ consumption/rollback and key invalidation. Run core/release and consumer checks.
 
 ## Implementation
 
-The issue-linked draft stack records the implementing PRs.
+- [PR #8: query contracts and APIs](https://github.com/OmarYacop/sqlite_loom/pull/8)
+- [PR #9: internal cleanup and consumer workflows](https://github.com/OmarYacop/sqlite_loom/pull/9)
+
+The first layer targets main; the second targets the first layer.
