@@ -1,6 +1,6 @@
 # Public API contract
 
-This document freezes the candidate `0.4.x` API categories ahead of 1.0. The
+This document freezes the candidate `0.5.x` API categories ahead of 1.0. The
 compile-time fixture in `test/public_api_compatibility_test.dart` protects the
 most compatibility-sensitive generic signatures; dartdoc generation audits the
 complete exported surface.
@@ -63,3 +63,20 @@ API and security review event.
 
 Every intentional public API change must update the changelog, this contract,
 the compatibility fixture, relevant consumer migrations, and the 1.0 roadmap.
+
+## 0.5 query composition contract
+
+- `DbSession` is the shared table/raw-read/watch surface. Root and transaction
+  handles implement it; transactions reject every watch synchronously.
+- `DbColumn.set(T)` and `DbValues.fromAssignments` statically check each write
+  value, retain column codecs and reject duplicate assignments. The map
+  constructor remains source compatible and checks values at runtime.
+- `keysetPagesBy` and `afterCursor` support typed, non-null lexicographic cursor
+  components with mixed directions. The last component must break every tie.
+  Existing ordering must exactly match cursor ordering.
+- Page streams honor the total source limit and apply the offset once. Count,
+  exists and aggregates retain predicate-only semantics, ignoring pagination.
+- Update/delete terminals reject order/limit/offset before executing SQL,
+  including RETURNING, optimistic updates and soft deletes.
+- Explicit batch sizes bound input materialization. Each batch commits separately
+  outside a transaction; a surrounding transaction guarantees all-batch rollback.

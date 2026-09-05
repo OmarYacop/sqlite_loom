@@ -44,6 +44,9 @@ final class DbColumn<T> implements AnyDbColumn {
   /// The safely quoted SQL identifier.
   String get sql => quoteIdentifier(name);
 
+  /// Creates a statically checked assignment for DbValues.fromAssignments.
+  DbAssignment<T> set(T value) => DbAssignment._(this, value);
+
   /// Encodes [value] for SQLite.
   Object? encode(T value) => _codec.encode(value);
 
@@ -541,4 +544,22 @@ NullableTextDbColumn nullableText(String name) {
     codec: nullableCodec(_stringCodec(name)),
     affinity: 'TEXT',
   );
+}
+
+/// An encoded assignment produced by a typed column.
+abstract interface class AnyDbAssignment {
+  String get columnName;
+  Object? get encodedValue;
+}
+
+/// An immutable assignment whose value is checked against its column type.
+final class DbAssignment<T> implements AnyDbAssignment {
+  DbAssignment._(DbColumn<T> column, T value)
+    : columnName = column.name,
+      encodedValue = column.encode(value);
+
+  @override
+  final String columnName;
+  @override
+  final Object? encodedValue;
 }

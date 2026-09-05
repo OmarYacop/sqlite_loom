@@ -1,7 +1,7 @@
 # Internal architecture
 
-SQLite Loom exposes two stable entry points: `sqlite_loom.dart` for runtime
-code and `dev.dart` for developer tooling. Files below `lib/src` are private and
+SQLite Loom exposes three stable entry points: `sqlite_loom.dart` for runtime
+code, `dev.dart` for developer tooling, and `testing.dart` for test harnesses. Files below `lib/src` are private and
 organized by responsibility:
 
 - `model/`: typed columns, tables, rows, values, codecs, and expressions.
@@ -16,7 +16,7 @@ organized by responsibility:
 
 Dependencies should point from higher-level features toward lower-level model
 and internal primitives. Application code must not import `src/` paths; keeping
-all public exports in the two package entry points allows internal files to move
+all public exports in the three package entry points allows internal files to move
 without consumer changes.
 
 When adding a feature, place it with the behavior it owns instead of creating a
