@@ -43,9 +43,13 @@ final class DbSchema {
   final DatabaseExecutor database;
 
   /// Validates declared table columns against SQLite's live schema.
+  ///
+  /// Set [requireAllColumns] to report live columns omitted from the mapping.
+  /// Partial mappings remain supported by default.
   Future<DbSchemaValidation> validate(
-    Iterable<DbTable<Object?, Object?>> tables,
-  ) async {
+    Iterable<DbTable<Object?, Object?>> tables, {
+    bool requireAllColumns = false,
+  }) async {
     final issues = <DbSchemaIssue>[];
     for (final table in tables) {
       final declaredNames = table.columns.map((column) => column.name).toList();
@@ -56,14 +60,29 @@ final class DbSchema {
           DbSchemaIssue(table.tableName, 'mapped columns contain duplicates'),
         );
       }
-      final rows = await database.rawQuery(
-        'PRAGMA table_info(${quoteIdentifier(table.tableName)})',
+      final extendedRows = await database.rawQuery(
+        'PRAGMA table_xinfo(${quoteIdentifier(table.tableName)})',
       );
+      // Unknown pragmas return no rows on older SQLite builds.
+      final rows = extendedRows.isNotEmpty
+          ? extendedRows
+          : await database.rawQuery(
+              'PRAGMA table_info(${quoteIdentifier(table.tableName)})',
+            );
       if (rows.isEmpty) {
         issues.add(DbSchemaIssue(table.tableName, 'table is missing'));
         continue;
       }
       final actual = {for (final row in rows) row['name']! as String: row};
+      if (requireAllColumns) {
+        for (final name in actual.keys.where(
+          (name) => !declaredNames.contains(name),
+        )) {
+          issues.add(
+            DbSchemaIssue(table.tableName, 'column $name is not mapped'),
+          );
+        }
+      }
       final primaryKeyRow = actual[table.primaryKey.name];
       if (primaryKeyRow != null && (primaryKeyRow['pk'] as num).toInt() == 0) {
         issues.add(

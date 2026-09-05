@@ -68,3 +68,41 @@ Joined selections reject duplicate result aliases, and their column lists are
 immutable. Raw watches snapshot their dependency/argument collections. Projected
 BLOB and JSON values use structural equality to suppress duplicate emissions;
 model watches still use `DbTable.equals`.
+
+## Merged feed continuations
+
+When merged sources can share cursor values, use the page's complete token:
+
+```dart
+final first = await timeline.loadPage(db, chatId, limit: 50);
+if (first.nextCursor != null) {
+  final next = await timeline.loadPage(db, chatId,
+      limit: 50, cursor: first.nextCursor);
+  // Consume next.items.
+}
+```
+
+`DbMergedPage.items` is immutable. `nextCursor` is null when the read found no
+more rows. The token includes cursor, source and primary-key tie breakers,
+including nullable cursor ordering, and validates descriptor, parent and order.
+Keep the same descriptor instance and filters; do not use offset transforms.
+Tokens are in-memory continuations, not durable or server API cursors. Existing
+`DbMergedCursorBound.before/after` remain exclusive scalar filters and deliberately
+exclude *all* rows equal to the supplied value.
+
+## Diagnostics and mapping checks
+
+`DbObservation.transactionId` correlates statements, savepoints and the transaction
+summary. Check the summary's success before interpreting statements as committed.
+IDs are local to one database instance. Observer exceptions remain isolated.
+Arguments are excluded, but raw SQL text and driver errors can contain literals;
+redact these fields before forwarding diagnostics externally when appropriate.
+
+Use `DbSchema(database).validate(tables, requireAllColumns: true)` in development
+or migration tests to catch columns omitted from `DbTable.columns`, including
+generated columns. The default still permits partial mappings.
+
+Successful row ID zero inserts now invalidate watches. An ignored insert with a
+zero or generated key can cause a conservative refresh. `insertReturning` records the
+stored key before decoding, so a decoder exception after a committed insert no
+longer leaves live queries stale. Inside a transaction, rollback still discards it.

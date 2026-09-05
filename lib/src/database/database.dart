@@ -238,6 +238,8 @@ final class SqliteLoomTransaction implements DbSession {
     final sqlName = quoteIdentifier(name);
     final accumulator = DbChangeAccumulator();
     final child = _TxDbExecutor(
+      owner: _executor.owner,
+      transactionId: _executor.transactionId,
       transaction: _executor.transaction,
       changes: _executor.changes,
       accumulator: accumulator,
