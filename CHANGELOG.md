@@ -1,3 +1,22 @@
+## 0.5.0
+
+- Reject update/delete order, limit, and offset modifiers instead of silently
+  ignoring them. Select keys and mutate in a transaction for bounded writes.
+- Honor total limits and initial offsets in pages; reject incompatible cursor
+  ordering; compile offset-only queries with SQLite's required LIMIT clause.
+- Add typed composite cursors (`DbCursorColumn`, `afterCursor`, `keysetPagesBy`)
+  for stable pagination across repeated sort values.
+- Add `DbSession` so application table extensions, joins and relationship reads
+  work inside transactions. Transaction watches remain prohibited.
+- Add `DbColumn.set` and `DbValues.fromAssignments` for compile-time write checks.
+- Consume explicitly sized bulk inputs incrementally. Unsized bulk calls retain
+  one-batch atomicity; wrap chunked calls in a transaction for whole-input atomicity.
+- Refresh keyed watches conservatively when writes change keys or replace rows
+  through other unique constraints.
+- Correct nullable join equality and freeze joined projection columns.
+
+See `doc/MIGRATING_0_5.md` for the intentional pre-1.0 behavior changes.
+
 ## 0.4.0 - 2026-08-14
 
 - Added explicit live-query invalidation and optional `PRAGMA data_version`

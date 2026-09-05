@@ -5,6 +5,7 @@ import 'package:sqflite_common/sqlite_api.dart';
 import '../database/capabilities.dart';
 import '../internal/executor.dart';
 import '../internal/sql.dart';
+import 'cursor.dart';
 import '../model/column.dart';
 import '../model/codec.dart';
 import '../model/expression.dart';
@@ -62,8 +63,7 @@ final class DbTableQuery<Row, Key> {
     if (where != null) sql.write(' WHERE ${where.sql}');
     final orderBy = _compileOrderBy();
     if (orderBy != null) sql.write(' ORDER BY $orderBy');
-    if (_limit != null) sql.write(' LIMIT $_limit');
-    if (_offset != null) sql.write(' OFFSET $_offset');
+    sql.write(paginationSql(_limit, _offset));
     return DbCompiledQuery(sql.toString(), where?.arguments ?? const []);
   }
 
@@ -110,8 +110,8 @@ final class DbTableQuery<Row, Key> {
 
   /// Deletes and returns affected rows using SQLite `RETURNING`.
   Future<List<Row>> deleteReturning() async {
-    (await _executor.capabilities()).require(DbFeature.returning);
     _assertSafeMutation();
+    (await _executor.capabilities()).require(DbFeature.returning);
     final where = _compileWhere();
     final rows = await _executor.rawQuery(
       'DELETE FROM ${quoteIdentifier(_table.tableName)}'
@@ -174,60 +174,88 @@ final class DbTableQuery<Row, Key> {
     return maps.map((map) => _table.decode(DbRow(map))).toList(growable: false);
   }
 
-  /// Reads this query in bounded offset pages.
+  /// Reads bounded pages, honoring the source limit and initial offset.
+  /// Supply deterministic ordering when traversing a changing database.
   Stream<List<Row>> pages({int size = 500}) async* {
     if (size < 1) throw ArgumentError.value(size, 'size', 'Must be positive');
     var pageOffset = _offset ?? 0;
-    while (true) {
-      final page = await _copyWith(limit: size, offset: pageOffset).get();
+    var remaining = _limit;
+    while (remaining == null || remaining > 0) {
+      final take = remaining == null || remaining > size ? size : remaining;
+      final page = await _copyWith(limit: take, offset: pageOffset).get();
       if (page.isEmpty) return;
       yield page;
-      if (page.length < size) return;
+      if (remaining != null) remaining -= page.length;
+      if (page.length < take) return;
       pageOffset += page.length;
     }
   }
 
-  /// Reads bounded pages using a unique [cursor] rather than large offsets.
+  /// Reads bounded pages using a unique non-null cursor column.
+  /// Existing ordering must match the cursor order exactly.
   Stream<List<Row>> keysetPages<T>(
     ComparableDbColumn<T> cursor, {
     int size = 500,
     bool descending = false,
+  }) => keysetPagesBy([
+    DbCursorColumn(cursor, descending: descending),
+  ], size: size);
+
+  /// Reads lexicographic cursor pages. The final component must break all ties.
+  /// Honors the source limit and applies its offset only to the first page.
+  Stream<List<Row>> keysetPagesBy(
+    Iterable<AnyDbCursorColumn> columns, {
+    int size = 500,
   }) async* {
     if (size < 1) throw ArgumentError.value(size, 'size', 'Must be positive');
-    T? lastValue;
-    var hasCursor = false;
-    while (true) {
-      var query = _copyWith(
-        limit: size,
-        orderings: [
-          ..._orderings,
-          descending ? cursor.descending() : cursor.ascending(),
-        ],
+    final cursor = columns.toList(growable: false);
+    final ordered = _withCursorOrder(cursor);
+    DbPredicate? bound;
+    var remaining = _limit;
+    var firstPage = true;
+    while (remaining == null || remaining > 0) {
+      final take = remaining == null || remaining > size ? size : remaining;
+      final query = (bound == null ? ordered : ordered.where(bound))._copyWith(
+        limit: take,
+        offset: firstPage ? (_offset ?? 0) : 0,
       );
-      if (hasCursor) {
-        query = query.where(
-          descending
-              ? cursor.lessThan(lastValue as T)
-              : cursor.greaterThan(lastValue as T),
-        );
-      }
-      final where = query._compileWhere();
-      final maps = await _executor.query(
-        _table.tableName,
-        where: where?.sql,
-        whereArgs: where?.arguments,
-        orderBy: query._compileOrderBy(),
-        limit: size,
-      );
+      final compiled = query.compile();
+      final maps = await _executor.rawQuery(compiled.sql, compiled.arguments);
       if (maps.isEmpty) return;
-      final page = maps
+      yield maps
           .map((map) => _table.decode(DbRow(map)))
           .toList(growable: false);
-      yield page;
-      if (page.length < size) return;
-      lastValue = cursor.decode(maps.last[cursor.name]);
-      hasCursor = true;
+      if (remaining != null) remaining -= maps.length;
+      if (maps.length < take) return;
+      bound = cursorPredicate([
+        for (final column in cursor) column.read(DbRow(maps.last)),
+      ]);
+      firstPage = false;
     }
+  }
+
+  /// Selects rows after a typed composite cursor in its declared sort order.
+  DbTableQuery<Row, Key> afterCursor(Iterable<AnyDbCursorValue> values) {
+    final cursor = values.toList(growable: false);
+    if ((_offset ?? 0) != 0) {
+      throw StateError('afterCursor cannot be combined with offset');
+    }
+    return _withCursorOrder([
+      for (final value in cursor) value.column,
+    ]).where(cursorPredicate(cursor));
+  }
+
+  DbTableQuery<Row, Key> _withCursorOrder(List<AnyDbCursorColumn> columns) {
+    validateCursor(columns);
+    final orderings = columns.map((column) => column.ordering).toList();
+    if (_orderings.isNotEmpty &&
+        (_orderings.length != orderings.length ||
+            Iterable<int>.generate(
+              orderings.length,
+            ).any((index) => _orderings[index].sql != orderings[index].sql))) {
+      throw StateError('Existing orderBy must match every cursor component');
+    }
+    return _copyWith(orderings: orderings);
   }
 
   /// Selects one typed value while retaining this query's filters and order.
@@ -314,7 +342,9 @@ final class DbTableQuery<Row, Key> {
       _executor.record(
         _table.tableId,
         DbChangeKind.insert,
-        keys: [explicitKey ?? insertedId],
+        keys: conflictAlgorithm == ConflictAlgorithm.replace
+            ? null
+            : [explicitKey ?? insertedId],
       );
     }
     return insertedId;
@@ -326,9 +356,7 @@ final class DbTableQuery<Row, Key> {
     ConflictAlgorithm? conflictAlgorithm,
     int? batchSize,
   }) async {
-    final materialized = rows.toList(growable: false);
-    if (materialized.isEmpty) return;
-    for (final rowsChunk in _chunks(materialized, batchSize)) {
+    for (final rowsChunk in _chunks(rows, batchSize)) {
       final encodedRows = <DbValues>[];
       final results = await _executor.commitBatch((batch) {
         for (final row in rowsChunk) {
@@ -352,7 +380,11 @@ final class DbTableQuery<Row, Key> {
         }
       }
       if (keys.isNotEmpty) {
-        _executor.record(_table.tableId, DbChangeKind.insert, keys: keys);
+        _executor.record(
+          _table.tableId,
+          DbChangeKind.insert,
+          keys: conflictAlgorithm == ConflictAlgorithm.replace ? null : keys,
+        );
       }
     }
   }
@@ -430,7 +462,12 @@ final class DbTableQuery<Row, Key> {
     _executor.record(
       _table.tableId,
       DbChangeKind.insert,
-      keys: primaryKey == null ? null : [primaryKey],
+      keys:
+          primaryKey == null ||
+              conflictTarget != null ||
+              (update?.asMap.containsKey(_table.primaryKey.name) ?? false)
+          ? null
+          : [primaryKey],
     );
     return row;
   }
@@ -441,9 +478,7 @@ final class DbTableQuery<Row, Key> {
     Iterable<AnyDbColumn>? conflictTarget,
     int? batchSize,
   }) async {
-    final materialized = rows.toList(growable: false);
-    if (materialized.isEmpty) return;
-    for (final rowsChunk in _chunks(materialized, batchSize)) {
+    for (final rowsChunk in _chunks(rows, batchSize)) {
       final keys = <Object?>[];
       var hasUnknownKey = false;
       await _executor.commitBatch((batch) {
@@ -465,7 +500,7 @@ final class DbTableQuery<Row, Key> {
       _executor.record(
         _table.tableId,
         DbChangeKind.insert,
-        keys: hasUnknownKey ? null : keys,
+        keys: hasUnknownKey || conflictTarget != null ? null : keys,
       );
     }
   }
@@ -486,15 +521,23 @@ final class DbTableQuery<Row, Key> {
       conflictAlgorithm: conflictAlgorithm,
     );
     if (affected > 0) {
-      _executor.record(_table.tableId, DbChangeKind.update, keys: _keyScope);
+      _executor.record(
+        _table.tableId,
+        DbChangeKind.update,
+        keys:
+            values.asMap.containsKey(_table.primaryKey.name) ||
+                conflictAlgorithm == ConflictAlgorithm.replace
+            ? null
+            : _keyScope,
+      );
     }
     return affected;
   }
 
   /// Updates and returns affected rows using SQLite `RETURNING`.
   Future<List<Row>> updateReturning(DbValues values) async {
-    (await _executor.capabilities()).require(DbFeature.returning);
     _assertSafeMutation();
+    (await _executor.capabilities()).require(DbFeature.returning);
     _assertNotEmpty(values);
     final where = _compileWhere();
     final assignments = values.asMap.keys
@@ -506,7 +549,13 @@ final class DbTableQuery<Row, Key> {
       [...values.asMap.values, ...?where?.arguments],
     );
     if (rows.isNotEmpty) {
-      _executor.record(_table.tableId, DbChangeKind.update, keys: _keyScope);
+      _executor.record(
+        _table.tableId,
+        DbChangeKind.update,
+        keys: values.asMap.containsKey(_table.primaryKey.name)
+            ? null
+            : _keyScope,
+      );
     }
     return rows.map((row) => _table.decode(DbRow(row))).toList(growable: false);
   }
@@ -701,6 +750,12 @@ final class DbTableQuery<Row, Key> {
   }
 
   void _assertSafeMutation() {
+    if (_limit != null || _offset != null || _orderings.isNotEmpty) {
+      throw StateError(
+        'Mutations do not support orderBy, limit, or offset. '
+        'Select keys first, then mutate those keys inside a transaction.',
+      );
+    }
     if (_predicates.isEmpty && !_allowAllRowsMutation) {
       throw StateError(
         'Refusing to mutate every row in ${_table.tableName}. '
@@ -1121,15 +1176,19 @@ final class DbLiveQuery<T> {
   }
 }
 
-Iterable<List<T>> _chunks<T>(List<T> values, int? size) sync* {
-  final chunkSize = size ?? values.length;
-  if (chunkSize < 1) {
+Iterable<List<T>> _chunks<T>(Iterable<T> values, int? size) sync* {
+  if (size != null && size < 1) {
     throw ArgumentError.value(size, 'batchSize', 'Must be positive');
   }
-  for (var start = 0; start < values.length; start += chunkSize) {
-    final end = (start + chunkSize).clamp(0, values.length);
-    yield values.sublist(start, end);
+  var chunk = <T>[];
+  for (final value in values) {
+    chunk.add(value);
+    if (size != null && chunk.length == size) {
+      yield chunk;
+      chunk = <T>[];
+    }
   }
+  if (chunk.isNotEmpty) yield chunk;
 }
 
 /// SQL and bound arguments produced from an immutable query.

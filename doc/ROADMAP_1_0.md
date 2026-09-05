@@ -6,7 +6,7 @@ implemented is not by itself a stability guarantee.
 
 ## Compatibility contract
 
-- The `0.4.x` public API is the candidate 1.0 surface. Breaking changes require
+- The `0.5.x` public API is the candidate 1.0 surface. Breaking changes require
   a major pre-1.0 minor release, a changelog entry, and an updated executable
   compatibility fixture.
 - Typed APIs bind values. APIs accepting SQL syntax use explicit trusted-SQL
@@ -39,7 +39,7 @@ implemented is not by itself a stability guarantee.
   locking, disk-full behavior, corruption recovery, and backup restoration.
 - Establish measured performance baselines per supported platform rather than
   relying only on the portable regression floor.
-- Freeze the final support and deprecation policy after the `0.4.x` adoption
+- Freeze the final support and deprecation policy after the `0.5.x` adoption
   window.
 
 ## Release discipline

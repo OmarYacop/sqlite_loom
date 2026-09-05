@@ -23,3 +23,7 @@ export 'src/model/row.dart';
 export 'src/migration/schema.dart';
 export 'src/model/table.dart';
 export 'src/model/values.dart';
+
+export 'src/database/session.dart';
+export 'src/query/cursor.dart'
+    show AnyDbCursorColumn, DbCursorColumn, AnyDbCursorValue, DbCursorValue;

@@ -2,7 +2,7 @@ import '../model/column.dart';
 import '../model/expression.dart';
 import '../model/row.dart';
 import '../model/table.dart';
-import '../database/database.dart';
+import '../database/session.dart';
 import '../internal/sql.dart';
 import 'query.dart';
 
@@ -29,7 +29,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
   final ParentKey Function(Child child) foreignKeyOf;
 
   /// Builds the child query for one [parentRow].
-  DbTableQuery<Child, ChildKey> query(SqliteLoom db, Parent parentRow) {
+  DbTableQuery<Child, ChildKey> query(DbSession db, Parent parentRow) {
     return db
         .table(children)
         .where(_foreignKeyEquals(foreignKey, parent.keyOf(parentRow)));
@@ -37,7 +37,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
 
   /// Builds one child query covering every supplied parent key.
   DbTableQuery<Child, ChildKey> queryKeys(
-    SqliteLoom db,
+    DbSession db,
     Iterable<ParentKey> parentKeys,
   ) {
     final keys = parentKeys.toSet();
@@ -50,7 +50,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
 
   /// Loads children belonging to one [parentRow].
   Future<List<Child>> load(
-    SqliteLoom db,
+    DbSession db,
     Parent parentRow, {
     DbRelationshipQuery<Child, ChildKey>? transform,
   }) {
@@ -60,7 +60,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
 
   /// Loads all children in one query and groups them by parent key.
   Future<Map<ParentKey, List<Child>>> loadAll(
-    SqliteLoom db,
+    DbSession db,
     Iterable<Parent> parentRows, {
     DbRelationshipQuery<Child, ChildKey>? transform,
   }) async {
@@ -77,7 +77,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
   /// variable limit. [batchSize] is deliberately conservative by default for
   /// older mobile SQLite builds.
   Future<Map<ParentKey, List<Child>>> loadAllBatched(
-    SqliteLoom db,
+    DbSession db,
     Iterable<Parent> parentRows, {
     DbRelationshipQuery<Child, ChildKey>? transform,
     int batchSize = 400,
@@ -113,7 +113,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
   /// applies independently to every parent. Loom compiles the portable
   /// compound query internally so application repositories remain typed.
   Future<Map<ParentKey, List<Child>>> loadAllLimited(
-    SqliteLoom db,
+    DbSession db,
     Iterable<Parent> parentRows, {
     required int limit,
     DbRelationshipQuery<Child, ChildKey>? transform,
@@ -158,7 +158,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
 
   /// Watches children belonging to one [parentRow].
   Stream<List<Child>> watch(
-    SqliteLoom db,
+    DbSession db,
     Parent parentRow, {
     DbRelationshipQuery<Child, ChildKey>? transform,
   }) {
@@ -168,7 +168,7 @@ final class DbHasMany<Parent, ParentKey, Child, ChildKey> {
 
   /// Watches one batched child query and groups emissions by parent key.
   Stream<Map<ParentKey, List<Child>>> watchAll(
-    SqliteLoom db,
+    DbSession db,
     Iterable<Parent> parentRows, {
     DbRelationshipQuery<Child, ChildKey>? transform,
   }) {
@@ -232,7 +232,7 @@ final class DbMergedRelationshipSource<Parent, ParentKey, Result> {
     required this.primaryKeyColumn,
     required this.parentKeyOf,
     required DbCompiledQuery Function(
-      SqliteLoom db,
+      DbSession db,
       ParentKey parentKey,
       int sourceLimit,
       bool descending,
@@ -248,7 +248,7 @@ final class DbMergedRelationshipSource<Parent, ParentKey, Result> {
   final AnyDbColumn primaryKeyColumn;
   final ParentKey Function(Parent parent) parentKeyOf;
   final DbCompiledQuery Function(
-    SqliteLoom db,
+    DbSession db,
     ParentKey parentKey,
     int sourceLimit,
     bool descending,
@@ -351,7 +351,7 @@ final class DbMergedRelationships<Parent, ParentKey, Result> {
   /// [batchSize] also keeps compound terms and bound variables within limits
   /// commonly found in older mobile SQLite builds.
   Future<Map<ParentKey, List<Result>>> load(
-    SqliteLoom db,
+    DbSession db,
     Iterable<Parent> parentRows, {
     required int limit,
     bool descending = true,
@@ -375,7 +375,7 @@ final class DbMergedRelationships<Parent, ParentKey, Result> {
 
   /// Loads merged child pages directly from parent keys.
   Future<Map<ParentKey, List<Result>>> loadKeys(
-    SqliteLoom db,
+    DbSession db,
     Iterable<ParentKey> parentKeys, {
     required int limit,
     bool descending = true,
@@ -391,7 +391,7 @@ final class DbMergedRelationships<Parent, ParentKey, Result> {
   );
 
   Future<Map<ParentKey, List<Result>>> _loadKeys(
-    SqliteLoom db,
+    DbSession db,
     Iterable<ParentKey> parentKeys, {
     required int limit,
     required bool descending,
@@ -524,7 +524,7 @@ final class DbHasOne<Parent, ParentKey, Related, RelatedKey> {
   );
 
   /// Loads the related row, returning null when absent and rejecting duplicates.
-  Future<Related?> load(SqliteLoom db, Parent parentRow) async {
+  Future<Related?> load(DbSession db, Parent parentRow) async {
     final rows = await _many.query(db, parentRow).limit(2).get();
     _rejectDuplicates(parent.keyOf(parentRow), rows);
     return rows.firstOrNull;
@@ -532,7 +532,7 @@ final class DbHasOne<Parent, ParentKey, Related, RelatedKey> {
 
   /// Loads and groups related rows in one query.
   Future<Map<ParentKey, Related?>> loadAll(
-    SqliteLoom db,
+    DbSession db,
     Iterable<Parent> parentRows,
   ) async {
     final grouped = await _many.loadAll(db, parentRows);
@@ -543,7 +543,7 @@ final class DbHasOne<Parent, ParentKey, Related, RelatedKey> {
   }
 
   /// Watches the related row for one parent.
-  Stream<Related?> watch(SqliteLoom db, Parent parentRow) {
+  Stream<Related?> watch(DbSession db, Parent parentRow) {
     final key = parent.keyOf(parentRow);
     return _many
         .query(db, parentRow)
@@ -584,20 +584,20 @@ final class DbBelongsTo<Source, SourceKey, Target, TargetKey> {
   final TargetKey? Function(Source row) foreignKeyOf;
 
   /// Builds the target query for [sourceRow].
-  DbTableQuery<Target, TargetKey> query(SqliteLoom db, Source sourceRow) {
+  DbTableQuery<Target, TargetKey> query(DbSession db, Source sourceRow) {
     final key = foreignKeyOf(sourceRow);
     final base = db.table(target);
     return key == null ? base.where(DbPredicate.never) : base.whereKey(key);
   }
 
   /// Loads the referenced target row, or null for an absent/null reference.
-  Future<Target?> load(SqliteLoom db, Source sourceRow) {
+  Future<Target?> load(DbSession db, Source sourceRow) {
     return query(db, sourceRow).firstOrNull();
   }
 
   /// Loads all distinct targets once and maps them back to source keys.
   Future<Map<SourceKey, Target?>> loadAll(
-    SqliteLoom db,
+    DbSession db,
     Iterable<Source> sourceRows,
   ) async {
     final rows = sourceRows.toList(growable: false);
@@ -615,7 +615,7 @@ final class DbBelongsTo<Source, SourceKey, Target, TargetKey> {
   }
 
   /// Watches the referenced target row for [sourceRow].
-  Stream<Target?> watch(SqliteLoom db, Source sourceRow) {
+  Stream<Target?> watch(DbSession db, Source sourceRow) {
     return query(db, sourceRow).watchFirstOrNull();
   }
 }

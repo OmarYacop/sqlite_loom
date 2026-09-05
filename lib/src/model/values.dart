@@ -10,6 +10,26 @@ final class DbValues {
         ),
       );
 
+  /// Collects assignments such as `name.set('Ada')` with compile-time checks.
+  /// Duplicate column assignments are rejected instead of silently overwritten.
+  DbValues.fromAssignments(Iterable<AnyDbAssignment> assignments)
+    : _values = _collectAssignments(assignments);
+
+  static Map<String, Object?> _collectAssignments(
+    Iterable<AnyDbAssignment> assignments,
+  ) {
+    final values = <String, Object?>{};
+    for (final assignment in assignments) {
+      if (values.containsKey(assignment.columnName)) {
+        throw ArgumentError(
+          'Duplicate assignment for ${assignment.columnName}',
+        );
+      }
+      values[assignment.columnName] = assignment.encodedValue;
+    }
+    return Map.unmodifiable(values);
+  }
+
   /// Wraps already encoded values.
   ///
   /// Prefer the typed constructor at normal application boundaries.

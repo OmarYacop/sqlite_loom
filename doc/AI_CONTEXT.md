@@ -4,8 +4,8 @@ Before changing the repository, read the operational rules in `AGENTS.md` and th
 branch, CI, release, and stacked-PR process in `doc/DEVELOPMENT_WORKFLOW.md`.
 
 SQLite Loom is a generator-free reactive SQLite layer for Dart and Flutter. It
-wraps a caller-owned `sqflite_common` `Database`; it does not open database
-files, generate models, or infer schema.
+wraps a caller-opened `sqflite_common` `Database`, or opens one through the
+explicit `SqliteLoomDatabase` lifecycle. It never generates models or infers schema.
 
 ## Canonical decisions
 
@@ -49,6 +49,9 @@ final class UsersTable extends DbTable<User, int> {
 
   @override
   DbColumn<int> get primaryKey => id;
+
+  @override
+  Iterable<AnyDbColumn> get columns => [id, name];
 
   @override
   User decode(DbRow row) => User(id: row.get(id), name: row.get(name));

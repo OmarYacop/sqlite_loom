@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common/sqlite_api.dart';
 
 import 'capabilities.dart';
+import 'session.dart';
 import '../internal/executor.dart';
 import '../internal/sql.dart';
 import '../migration/migration.dart';
@@ -119,7 +120,7 @@ Future<void> configureSqliteLoomConnection(
   }
 }
 
-final class SqliteLoom {
+final class SqliteLoom implements DbSession {
   /// Wraps an open [Database].
   SqliteLoom(
     Database database, {
@@ -225,6 +226,7 @@ final class SqliteLoom {
   }
 
   /// Executes a parameterized raw read.
+  @override
   Future<List<Map<String, Object?>>> rawRead(
     String sql, {
     List<Object?> arguments = const [],
@@ -233,6 +235,7 @@ final class SqliteLoom {
   }
 
   /// Watches a raw read and reloads it when one of [dependsOn] changes.
+  @override
   Stream<List<Map<String, Object?>>> watchRaw(
     String sql, {
     List<Object?> arguments = const [],
@@ -250,6 +253,7 @@ final class SqliteLoom {
   }
 
   /// Creates an immutable query for [table].
+  @override
   DbTableQuery<Row, Key> table<Row, Key>(DbTable<Row, Key> table) {
     return DbTableQuery<Row, Key>.internal(_root, table);
   }
@@ -581,24 +585,35 @@ final class SqliteLoomDatabase {
 /// The database view passed to a [SqliteLoom.transaction] callback.
 ///
 /// Live queries cannot be created from this view.
-final class SqliteLoomTransaction {
+final class SqliteLoomTransaction implements DbSession {
   SqliteLoomTransaction._(this._executor);
 
   final _TxDbExecutor _executor;
   static int _nextSavepoint = 0;
 
   /// Creates a typed query that executes within this transaction.
+  @override
   DbTableQuery<Row, Key> table<Row, Key>(DbTable<Row, Key> table) {
     return DbTableQuery<Row, Key>.internal(_executor, table);
   }
 
   /// Executes a parameterized raw read within this transaction.
+  @override
   Future<List<Map<String, Object?>>> rawRead(
     String sql, {
     List<Object?> arguments = const [],
   }) {
     return _executor.rawQuery(sql, arguments);
   }
+
+  @override
+  Stream<List<Map<String, Object?>>> watchRaw(
+    String sql, {
+    List<Object?> arguments = const [],
+    required Set<DbTableId> dependsOn,
+  }) => throw StateError(
+    'Live queries cannot be created from an active transaction',
+  );
 
   /// Executes a raw transaction write and records affected tables.
   Future<void> rawWrite(

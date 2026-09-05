@@ -1,4 +1,4 @@
-import '../database/database.dart';
+import '../database/session.dart';
 import '../internal/sql.dart';
 import '../model/codec.dart';
 import '../model/column.dart';
@@ -39,7 +39,9 @@ final class DbJoinColumn<T> implements AnyDbJoinColumn {
   }
 
   DbPredicate equalsValue(T value) {
-    return DbPredicate('$qualifiedSql = ?', [column.encode(value)]);
+    return value == null
+        ? DbPredicate('$qualifiedSql IS NULL')
+        : DbPredicate('$qualifiedSql = ?', [column.encode(value)]);
   }
 
   DbOrdering ascending({String? collation, bool? nullsFirst}) => DbOrdering(
@@ -93,7 +95,7 @@ final class DbJoinQuery {
        _offset = offset,
        _distinct = distinct;
 
-  final SqliteLoom _db;
+  final DbSession _db;
   final DbTable<Object?, Object?> _from;
   final String _alias;
   final List<_DbJoinClause> _joins;
@@ -187,7 +189,8 @@ final class DbJoinQuery {
 
 /// Executable selection from a [DbJoinQuery].
 final class DbJoinSelection {
-  DbJoinSelection._(this._query, this.columns) {
+  DbJoinSelection._(this._query, List<AnyDbJoinColumn> columns)
+    : columns = List.unmodifiable(columns) {
     if (columns.isEmpty) {
       throw ArgumentError.value(columns, 'columns', 'Cannot be empty');
     }
@@ -334,7 +337,7 @@ final class DbCompiledJoin {
   final List<Object?> arguments;
 }
 
-extension SqliteLoomJoins on SqliteLoom {
+extension SqliteLoomJoins on DbSession {
   DbJoinQuery joinFrom(DbTable<Object?, Object?> table, {required String as}) =>
       DbJoinQuery._(this, table, as);
 }
