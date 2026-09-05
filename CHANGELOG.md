@@ -1,5 +1,13 @@
 ## 0.5.0
 
+- Fix invalidation for row ID zero and committed inserts whose RETURNING decoder fails.
+- Add complete merged-page continuations with source/key tie breakers and null ordering.
+- Correlate transaction statements and savepoints with `DbObservation.transactionId`;
+  share operation forwarding between root and transaction sessions.
+- Add opt-in complete mapping validation, including generated columns.
+- Add a native persistence fixture and disk-backed consumer benchmark.
+
+
 - Reject update/delete order, limit, and offset modifiers instead of silently
   ignoring them. Select keys and mutate in a transaction for bounded writes.
 - Honor total limits and initial offsets in pages; reject incompatible cursor

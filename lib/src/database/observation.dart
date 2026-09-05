@@ -9,6 +9,7 @@ final class DbObservation {
     this.sql,
     this.resultCount,
     this.error,
+    this.transactionId,
     this.sequence = 0,
     this.startedAt,
     this.isSlow = false,
@@ -20,12 +21,17 @@ final class DbObservation {
   final String? table;
   final String? sql;
   final int? resultCount;
+
+  /// Correlates a transaction summary, its statements and nested savepoints.
+  /// Null for operations outside a transaction. IDs are local to one database.
+  final int? transactionId;
+
   final int sequence;
   final DateTime? startedAt;
   final bool isSlow;
   final Map<String, String> context;
 
-  /// The operation error, when it failed. Bound values remain excluded.
+  /// The driver error, when the operation failed. Its text may contain literals.
   final Object? error;
 
   /// Whether the database operation completed successfully.

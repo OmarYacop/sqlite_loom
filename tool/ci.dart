@@ -52,6 +52,7 @@ Future<void> _dispatch(List<String> arguments) async {
         '10000',
         '10000',
       ]);
+      await _run('dart', ['run', 'benchmark/consumer_workflows.dart']);
       return;
     case 'publish-check':
       await _run('dart', ['pub', 'publish', '--dry-run']);

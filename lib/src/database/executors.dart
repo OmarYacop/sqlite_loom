@@ -1,6 +1,8 @@
 part of 'database.dart';
 
-final class _RootDbExecutor implements DbExecutorAdapter {
+final class _RootDbExecutor
+    with _ObservedDbOperations
+    implements DbExecutorAdapter {
   _RootDbExecutor(
     this.database, {
     DbObserver? observer,
@@ -26,6 +28,7 @@ final class _RootDbExecutor implements DbExecutorAdapter {
   final Duration? _slowQueryThreshold;
   final Map<String, String> _observerContext;
   int _observationSequence = 0;
+  int _transactionSequence = 0;
   Future<DbCapabilities>? _capabilities;
   final StreamController<DbChangeSet> _changes =
       StreamController<DbChangeSet>.broadcast(sync: true);
@@ -43,149 +46,31 @@ final class _RootDbExecutor implements DbExecutorAdapter {
   Future<DbCapabilities> capabilities() =>
       _capabilities ??= loadDbCapabilities(database);
 
-  @override
-  Future<List<Object?>> commitBatch(
-    void Function(Batch batch) build, {
-    required bool noResult,
-  }) {
-    return _observe('batch', () {
-      final batch = database.batch();
-      build(batch);
-      return batch.commit(noResult: noResult);
-    }, count: (results) => results.length);
-  }
-
-  @override
-  Future<int> delete(String table, {String? where, List<Object?>? whereArgs}) {
-    return _observe(
-      'delete',
-      () => database.delete(table, where: where, whereArgs: whereArgs),
-      table: table,
-      count: (value) => value,
-    );
-  }
-
-  @override
-  Future<void> execute(String sql, [List<Object?>? arguments]) {
-    return _observe(
-      'execute',
-      () => database.execute(sql, arguments),
-      sql: sql,
-    );
-  }
-
-  @override
-  Future<int> insert(
-    String table,
-    Map<String, Object?> values, {
-    String? nullColumnHack,
-    ConflictAlgorithm? conflictAlgorithm,
-  }) {
-    return _observe(
-      'insert',
-      () => database.insert(
-        table,
-        values,
-        nullColumnHack: nullColumnHack,
-        conflictAlgorithm: conflictAlgorithm,
-      ),
-      table: table,
-      count: (_) => 1,
-    );
-  }
-
-  @override
-  Future<List<Map<String, Object?>>> query(
-    String table, {
-    List<String>? columns,
-    String? where,
-    List<Object?>? whereArgs,
-    String? orderBy,
-    int? limit,
-    int? offset,
-  }) {
-    return _observe(
-      'query',
-      () => database.query(
-        table,
-        columns: columns,
-        where: where,
-        whereArgs: whereArgs,
-        orderBy: orderBy,
-        limit: limit,
-        offset: offset,
-      ),
-      table: table,
-      count: (rows) => rows.length,
-    );
-  }
-
-  @override
-  Future<List<Map<String, Object?>>> rawQuery(
-    String sql, [
-    List<Object?>? arguments,
-  ]) {
-    return _observe(
-      'query',
-      () => database.rawQuery(sql, arguments),
-      sql: sql,
-      count: (rows) => rows.length,
-    );
-  }
-
-  @override
-  Future<int> rawInsert(String sql, [List<Object?>? arguments]) {
-    return _observe(
-      'insert',
-      () => database.rawInsert(sql, arguments),
-      sql: sql,
-      count: (_) => 1,
-    );
-  }
-
   Future<T> transaction<T>(
     Future<T> Function(SqliteLoomTransaction tx) action, {
     bool? exclusive,
   }) async {
     final accumulator = DbChangeAccumulator();
+    final transactionId = _transactionSequence++;
     final result = await _observe(
       'transaction',
       () => database.transaction<T>((txn) async {
         final executor = _TxDbExecutor(
           transaction: txn,
+          owner: this,
+          transactionId: transactionId,
           changes: changes,
           accumulator: accumulator,
         );
         return action(SqliteLoomTransaction._(executor));
       }, exclusive: exclusive),
+      transactionId: transactionId,
     );
 
     if (accumulator.isNotEmpty) {
       _publish(accumulator.toChangeSet());
     }
     return result;
-  }
-
-  @override
-  Future<int> update(
-    String table,
-    Map<String, Object?> values, {
-    String? where,
-    List<Object?>? whereArgs,
-    ConflictAlgorithm? conflictAlgorithm,
-  }) {
-    return _observe(
-      'update',
-      () => database.update(
-        table,
-        values,
-        where: where,
-        whereArgs: whereArgs,
-        conflictAlgorithm: conflictAlgorithm,
-      ),
-      table: table,
-      count: (value) => value,
-    );
   }
 
   @override
@@ -212,13 +97,16 @@ final class _RootDbExecutor implements DbExecutorAdapter {
     }
   }
 
+  @override
   Future<T> _observe<T>(
     String operation,
     Future<T> Function() action, {
     String? table,
     String? sql,
     int Function(T value)? count,
+    int? transactionId,
   }) async {
+    if (_observer == null) return action();
     final sequence = _observationSequence++;
     final startedAt = DateTime.now().toUtc();
     final stopwatch = Stopwatch()..start();
@@ -233,6 +121,7 @@ final class _RootDbExecutor implements DbExecutorAdapter {
           sql: sql,
           resultCount: count?.call(value),
           sequence: sequence,
+          transactionId: transactionId,
           startedAt: startedAt,
           isSlow:
               _slowQueryThreshold != null &&
@@ -251,6 +140,7 @@ final class _RootDbExecutor implements DbExecutorAdapter {
           sql: sql,
           error: error,
           sequence: sequence,
+          transactionId: transactionId,
           startedAt: startedAt,
           isSlow:
               _slowQueryThreshold != null &&
@@ -277,15 +167,37 @@ final class _RootDbExecutor implements DbExecutorAdapter {
   }
 }
 
-final class _TxDbExecutor implements DbExecutorAdapter {
+final class _TxDbExecutor
+    with _ObservedDbOperations
+    implements DbExecutorAdapter {
   _TxDbExecutor({
     required this.transaction,
+    required this.owner,
+    required this.transactionId,
     required Stream<DbChangeSet> changes,
     required DbChangeAccumulator accumulator,
   }) : _changes = changes,
        _accumulator = accumulator;
 
   final Transaction transaction;
+  final _RootDbExecutor owner;
+  final int transactionId;
+
+  @override
+  Future<T> _observe<T>(
+    String operation,
+    Future<T> Function() action, {
+    String? table,
+    String? sql,
+    int Function(T value)? count,
+  }) => owner._observe(
+    operation,
+    action,
+    table: table,
+    sql: sql,
+    count: count,
+    transactionId: transactionId,
+  );
   final Stream<DbChangeSet> _changes;
   final DbChangeAccumulator _accumulator;
   Future<DbCapabilities>? _capabilities;
@@ -304,23 +216,58 @@ final class _TxDbExecutor implements DbExecutorAdapter {
       _capabilities ??= loadDbCapabilities(transaction);
 
   @override
+  void record(DbTableId table, DbChangeKind kind, {Iterable<Object?>? keys}) {
+    _accumulator.add(table, kind, keys: keys);
+  }
+
+  void recordRaw(Set<DbTableId> affects) {
+    for (final table in affects) {
+      _accumulator.add(table, DbChangeKind.raw);
+    }
+  }
+
+  void merge(DbChangeAccumulator changes) => _accumulator.addAll(changes);
+}
+
+/// Both sessions use exactly the same operation metadata and forwarding paths.
+mixin _ObservedDbOperations implements DbExecutorAdapter {
+  Future<T> _observe<T>(
+    String operation,
+    Future<T> Function() action, {
+    String? table,
+    String? sql,
+    int Function(T value)? count,
+  });
+
+  @override
   Future<List<Object?>> commitBatch(
     void Function(Batch batch) build, {
     required bool noResult,
   }) {
-    final batch = transaction.batch();
-    build(batch);
-    return batch.commit(noResult: noResult);
+    return _observe('batch', () {
+      final batch = executor.batch();
+      build(batch);
+      return batch.commit(noResult: noResult);
+    }, count: (results) => results.length);
   }
 
   @override
   Future<int> delete(String table, {String? where, List<Object?>? whereArgs}) {
-    return transaction.delete(table, where: where, whereArgs: whereArgs);
+    return _observe(
+      'delete',
+      () => executor.delete(table, where: where, whereArgs: whereArgs),
+      table: table,
+      count: (value) => value,
+    );
   }
 
   @override
   Future<void> execute(String sql, [List<Object?>? arguments]) {
-    return transaction.execute(sql, arguments);
+    return _observe(
+      'execute',
+      () => executor.execute(sql, arguments),
+      sql: sql,
+    );
   }
 
   @override
@@ -330,11 +277,16 @@ final class _TxDbExecutor implements DbExecutorAdapter {
     String? nullColumnHack,
     ConflictAlgorithm? conflictAlgorithm,
   }) {
-    return transaction.insert(
-      table,
-      values,
-      nullColumnHack: nullColumnHack,
-      conflictAlgorithm: conflictAlgorithm,
+    return _observe(
+      'insert',
+      () => executor.insert(
+        table,
+        values,
+        nullColumnHack: nullColumnHack,
+        conflictAlgorithm: conflictAlgorithm,
+      ),
+      table: table,
+      count: (_) => 1,
     );
   }
 
@@ -348,14 +300,19 @@ final class _TxDbExecutor implements DbExecutorAdapter {
     int? limit,
     int? offset,
   }) {
-    return transaction.query(
-      table,
-      columns: columns,
-      where: where,
-      whereArgs: whereArgs,
-      orderBy: orderBy,
-      limit: limit,
-      offset: offset,
+    return _observe(
+      'query',
+      () => executor.query(
+        table,
+        columns: columns,
+        where: where,
+        whereArgs: whereArgs,
+        orderBy: orderBy,
+        limit: limit,
+        offset: offset,
+      ),
+      table: table,
+      count: (rows) => rows.length,
     );
   }
 
@@ -364,12 +321,22 @@ final class _TxDbExecutor implements DbExecutorAdapter {
     String sql, [
     List<Object?>? arguments,
   ]) {
-    return transaction.rawQuery(sql, arguments);
+    return _observe(
+      'query',
+      () => executor.rawQuery(sql, arguments),
+      sql: sql,
+      count: (rows) => rows.length,
+    );
   }
 
   @override
   Future<int> rawInsert(String sql, [List<Object?>? arguments]) {
-    return transaction.rawInsert(sql, arguments);
+    return _observe(
+      'insert',
+      () => executor.rawInsert(sql, arguments),
+      sql: sql,
+      count: (_) => 1,
+    );
   }
 
   @override
@@ -380,25 +347,17 @@ final class _TxDbExecutor implements DbExecutorAdapter {
     List<Object?>? whereArgs,
     ConflictAlgorithm? conflictAlgorithm,
   }) {
-    return transaction.update(
-      table,
-      values,
-      where: where,
-      whereArgs: whereArgs,
-      conflictAlgorithm: conflictAlgorithm,
+    return _observe(
+      'update',
+      () => executor.update(
+        table,
+        values,
+        where: where,
+        whereArgs: whereArgs,
+        conflictAlgorithm: conflictAlgorithm,
+      ),
+      table: table,
+      count: (value) => value,
     );
   }
-
-  @override
-  void record(DbTableId table, DbChangeKind kind, {Iterable<Object?>? keys}) {
-    _accumulator.add(table, kind, keys: keys);
-  }
-
-  void recordRaw(Set<DbTableId> affects) {
-    for (final table in affects) {
-      _accumulator.add(table, DbChangeKind.raw);
-    }
-  }
-
-  void merge(DbChangeAccumulator changes) => _accumulator.addAll(changes);
 }

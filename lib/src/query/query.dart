@@ -325,13 +325,15 @@ final class DbTableQuery<Row, Key> {
       '(${List.filled(columns.length, '?').join(', ')}) RETURNING *',
       values.asMap.values.toList(growable: false),
     );
-    final stored = _table.decode(DbRow(result.single));
+    final stored = result.single;
     _executor.record(
       _table.tableId,
       DbChangeKind.insert,
-      keys: [_table.primaryKey.encode(_table.keyOf(stored))],
+      keys: stored[_table.primaryKey.name] == null
+          ? null
+          : [stored[_table.primaryKey.name]],
     );
-    return stored;
+    return _table.decode(DbRow(stored));
   }
 
   /// Inserts pre-encoded [values] and returns SQLite's inserted row ID.
@@ -345,8 +347,12 @@ final class DbTableQuery<Row, Key> {
       values.asMap,
       conflictAlgorithm: conflictAlgorithm,
     );
-    if (insertedId != 0) {
-      final explicitKey = values.asMap[_table.primaryKey.name];
+    final explicitKey = values.asMap[_table.primaryKey.name];
+    // Zero is a valid explicit rowid. IGNORE can also return zero; in that
+    // ambiguous case conservatively refresh rather than miss a stored row.
+    if (insertedId != 0 ||
+        conflictAlgorithm != ConflictAlgorithm.ignore ||
+        explicitKey == 0) {
       _executor.record(
         _table.tableId,
         DbChangeKind.insert,
@@ -381,7 +387,10 @@ final class DbTableQuery<Row, Key> {
       final keys = <Object?>[];
       for (var index = 0; index < results.length; index += 1) {
         final insertedId = results[index];
-        if (insertedId is int && insertedId != 0) {
+        if (insertedId is int &&
+            (insertedId != 0 ||
+                conflictAlgorithm != ConflictAlgorithm.ignore ||
+                encodedRows[index].asMap[_table.primaryKey.name] == 0)) {
           keys.add(
             encodedRows[index].asMap[_table.primaryKey.name] ?? insertedId,
           );

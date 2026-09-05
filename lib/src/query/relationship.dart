@@ -221,6 +221,35 @@ final class DbMergedCursorBound {
   final _DbMergedCursorDirection _direction;
 }
 
+/// An opaque continuation tied to its relationship instance, parent and order.
+/// Obtain it from [DbMergedPage.nextCursor]; do not reuse after changing filters.
+final class DbMergedContinuation {
+  const DbMergedContinuation._(
+    this._owner,
+    this._parent,
+    this._descending,
+    this._value,
+    this._source,
+    this._key,
+  );
+  final Object _owner;
+  final Object? _parent;
+  final bool _descending;
+  final Object? _value;
+  final int _source;
+  final Object? _key;
+}
+
+/// A merged page with a complete cursor, including ordering tie breakers.
+final class DbMergedPage<Result> {
+  DbMergedPage._(Iterable<Result> items, this.nextCursor)
+    : items = List.unmodifiable(items);
+  final List<Result> items;
+
+  /// Null when no more rows were present at read time.
+  final DbMergedContinuation? nextCursor;
+}
+
 /// One heterogeneous child source participating in a merged relationship.
 ///
 /// Create instances with [dbMergedRelationshipSource] so the child row type
@@ -237,6 +266,7 @@ final class DbMergedRelationshipSource<Parent, ParentKey, Result> {
       int sourceLimit,
       bool descending,
       DbMergedCursorBound? cursor,
+      DbPredicate? continuation,
     )
     compile,
     required Result Function(Map<String, Object?> row) decode,
@@ -253,6 +283,7 @@ final class DbMergedRelationshipSource<Parent, ParentKey, Result> {
     int sourceLimit,
     bool descending,
     DbMergedCursorBound? cursor,
+    DbPredicate? continuation,
   )
   _compile;
   final Result Function(Map<String, Object?> row) _decode;
@@ -290,7 +321,7 @@ dbMergedRelationshipSource<Parent, ParentKey, Child, ChildKey, Result>({
     cursorColumn: cursorColumn,
     primaryKeyColumn: relationship.children.primaryKey,
     parentKeyOf: relationship.parent.keyOf,
-    compile: (db, parentKey, sourceLimit, descending, cursor) {
+    compile: (db, parentKey, sourceLimit, descending, cursor, continuation) {
       final direction = descending ? 'DESC' : 'ASC';
       var base = relationship
           .queryKeys(db, [parentKey])
@@ -314,6 +345,7 @@ dbMergedRelationshipSource<Parent, ParentKey, Child, ChildKey, Result>({
           ]),
         );
       }
+      if (continuation != null) base = base.where(continuation);
       final query = transform?.call(base) ?? base;
       return query.limit(sourceLimit).compile(columns: columns);
     },
@@ -390,6 +422,56 @@ final class DbMergedRelationships<Parent, ParentKey, Result> {
     cursor: cursor,
   );
 
+  /// Reads a page for one parent and returns a lossless continuation.
+  ///
+  /// Ordering is cursor, source position, then primary key, including SQLite
+  /// null ordering. Keep this descriptor and its filters stable while
+  /// paging. Pages are separate reads; use a transaction for a stable snapshot.
+  Future<DbMergedPage<Result>> loadPage(
+    DbSession db,
+    ParentKey parentKey, {
+    required int limit,
+    bool descending = true,
+    DbMergedContinuation? cursor,
+  }) async {
+    if (limit < 1)
+      throw ArgumentError.value(limit, 'limit', 'Must be positive');
+    if (cursor != null &&
+        (!identical(cursor._owner, this) ||
+            cursor._parent != parentKey ||
+            cursor._descending != descending)) {
+      throw ArgumentError.value(
+        cursor,
+        'cursor',
+        'Relationship, parent or order changed',
+      );
+    }
+    final boundaries = <DbMergedContinuation>[];
+    final grouped = await _loadKeys(
+      db,
+      [parentKey],
+      limit: limit + 1,
+      descending: descending,
+      batchSize: 1,
+      continuation: cursor,
+      onRow: (row) => boundaries.add(
+        DbMergedContinuation._(
+          this,
+          parentKey,
+          descending,
+          row['_loom_cursor'],
+          row['_loom_source']! as int,
+          row['_loom_key'],
+        ),
+      ),
+    );
+    final items = grouped[parentKey]!;
+    return DbMergedPage._(
+      items.take(limit),
+      items.length > limit ? boundaries[limit - 1] : null,
+    );
+  }
+
   Future<Map<ParentKey, List<Result>>> _loadKeys(
     DbSession db,
     Iterable<ParentKey> parentKeys, {
@@ -397,6 +479,8 @@ final class DbMergedRelationships<Parent, ParentKey, Result> {
     required bool descending,
     required int batchSize,
     DbMergedCursorBound? cursor,
+    DbMergedContinuation? continuation,
+    void Function(Map<String, Object?> row)? onRow,
   }) async {
     if (limit < 1) {
       throw ArgumentError.value(limit, 'limit', 'Must be positive');
@@ -446,6 +530,9 @@ final class DbMergedRelationships<Parent, ParentKey, Result> {
             limit,
             descending,
             cursor,
+            continuation == null
+                ? null
+                : _continuationPredicate(source, sourceIndex, continuation),
           );
           final sourceNames = source.columns
               .map((column) => column.name)
@@ -489,10 +576,40 @@ final class DbMergedRelationships<Parent, ParentKey, Result> {
           for (final column in source.columns) column.name: map[column.name],
         };
         grouped[keys[parentIndex]]!.add(source._decode(sourceRow));
+        onRow?.call(map);
       }
     }
     return _freezeMergedGroups(grouped);
   }
+}
+
+DbPredicate _continuationPredicate(
+  DbMergedRelationshipSource<dynamic, dynamic, dynamic> source,
+  int sourceIndex,
+  DbMergedContinuation cursor,
+) {
+  final column = quoteIdentifier(source.cursorColumn.name);
+  final key = quoteIdentifier(source.primaryKeyColumn.name);
+  final comparison = cursor._descending ? '<' : '>';
+  final value = cursor._value;
+  final strict = value == null
+      ? (cursor._descending ? '0' : '$column IS NOT NULL')
+      : (cursor._descending
+            ? '($column < ? OR $column IS NULL)'
+            : '$column > ?');
+  final arguments = <Object?>[if (value != null) value];
+  // Source order is always ascending, including descending feeds.
+  if (sourceIndex > cursor._source) {
+    return DbPredicate('$strict OR $column IS ?', [...arguments, value]);
+  }
+  if (sourceIndex == cursor._source) {
+    return DbPredicate('$strict OR ($column IS ? AND $key $comparison ?)', [
+      ...arguments,
+      value,
+      cursor._key,
+    ]);
+  }
+  return DbPredicate(strict, arguments);
 }
 
 Map<Key, List<Result>> _freezeMergedGroups<Key, Result>(

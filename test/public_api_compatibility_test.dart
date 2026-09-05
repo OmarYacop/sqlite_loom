@@ -69,6 +69,17 @@ void main() {
           .arguments,
       [1],
     );
+    final observation = DbObservation(
+      operation: 'query',
+      duration: Duration.zero,
+      transactionId: 42,
+    );
+    expect(observation.transactionId, 42);
+    // The complete merged-page types are available through the public entry point.
+    final List<DbMergedPage<_Fixture>> pages = [];
+    final List<DbMergedContinuation> continuations = [];
+    expect(pages, isEmpty);
+    expect(continuations, isEmpty);
     final select = query.select([_FixtureTable.id, _FixtureTable.name]);
     final pluck = query.pluck(_FixtureTable.name);
     final aggregate = DbAggregate.count();
