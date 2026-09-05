@@ -44,6 +44,9 @@ final class TodosTable extends DbTable<Todo, int> {
   DbColumn<int> get primaryKey => id;
 
   @override
+  Iterable<AnyDbColumn> get columns => [id, title, done, createdAt];
+
+  @override
   Todo decode(DbRow row) {
     return Todo(
       id: row.get(id),
@@ -70,7 +73,7 @@ final class TodosTable extends DbTable<Todo, int> {
   bool equals(Todo left, Todo right) => left == right;
 }
 
-extension TodoQueries on SqliteLoom {
+extension TodoQueries on DbSession {
   DbTableQuery<Todo, int> get todos => table(const TodosTable());
 }
 

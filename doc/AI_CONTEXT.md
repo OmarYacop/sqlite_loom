@@ -25,9 +25,12 @@ explicit `SqliteLoomDatabase` lifecycle. It never generates models or infers sch
 - Consume the generated `sqliteLoomProject`; do not maintain migration lists or
   checksum wrappers in application code. Drafts are editable until
   `migrate:finalize`. Do not edit finalized history; create a new migration.
+- Define application table extensions on `DbSession` to reuse them in transactions.
 - Keep query objects immutable. Chain `where`, `orderBy`, `limit`, and `offset`.
-- Use `DbValues` for encoded writes. Use `DbValues.raw` only at a deliberate
+- Prefer `DbValues.fromAssignments([column.set(value)])` for statically checked writes.
+  The `DbValues` map constructor remains available for encoded writes. Use `DbValues.raw` only at a deliberate
   raw-SQL boundary.
+- Read ordering/limit/offset are rejected on updates and deletes.
 - Never call an unfiltered `update` or `delete`. SQLite Loom rejects it. Add a
   predicate or call `allRows()` to make whole-table intent explicit.
 - Use `SqliteLoom.transaction` for related writes. Query watches are forbidden

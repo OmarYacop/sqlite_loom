@@ -32,6 +32,14 @@ implemented is not by itself a stability guarantee.
 - Released migration checksums are immutable, concurrent migration attempts are
   serialized, and rollback/failure behavior is covered by fixtures.
 
+## Host recovery evidence
+
+`test/recovery_test.dart` exercises a SQLite page-capacity failure with transaction
+rollback and subsequent writes, restoration of an independent backup including
+migration history, and non-destructive failure on corrupt files. Consumer host
+checks also cover process restart and multi-connection behavior. These tests
+supplement, and do not replace, the device evidence below.
+
 ## Remaining before 1.0
 
 - Accumulate real-world soak time across Android and iOS SQLite builds.

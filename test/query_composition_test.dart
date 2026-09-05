@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:sqlite_loom/sqlite_loom.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -47,6 +48,7 @@ void main() {
   sqfliteFfiInit();
   late SqliteLoom db;
   var batches = 0;
+  Completer<void>? nextRead;
   setUp(() async {
     batches = 0;
     final raw = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
@@ -54,6 +56,11 @@ void main() {
       raw,
       observer: (event) {
         if (event.operation == 'batch' && event.succeeded) batches++;
+        if (event.operation == 'query' &&
+            event.succeeded &&
+            nextRead != null &&
+            !nextRead!.isCompleted)
+          nextRead!.complete();
       },
     );
     await raw.execute(
@@ -335,6 +342,99 @@ void main() {
       );
       expect(await values.moveNext().timeout(const Duration(seconds: 3)), true);
       expect(values.current, isNull);
+    } finally {
+      await values.cancel();
+    }
+  });
+  test('first terminals preserve an explicit zero limit', () async {
+    await db.items.insert(item(1));
+    expect(await db.items.limit(0).firstOrNull(), isNull);
+    expect(await db.items.limit(0).pluck(Items.name).firstOrNull(), isNull);
+    expect(
+      await db.items.limit(0).groupBy([Items.parent]).select([
+        Items.parent,
+      ]).firstOrNull(),
+      isNull,
+    );
+    expect(
+      await db.joinFrom(const Items(), as: 'i').limit(0).select([
+        DbJoinColumn('i', Items.id),
+      ]).firstOrNull(),
+      isNull,
+    );
+    expect(await db.items.limit(0).count(), 1);
+    expect(await db.items.limit(0).exists(), true);
+  });
+
+  test('join null equality and immutable unique projection aliases', () async {
+    await db.items.insert(item(1));
+    await db.database.execute('ALTER TABLE items ADD COLUMN note TEXT');
+    final note = DbJoinColumn('i', nullableText('note'));
+    final columns = <AnyDbJoinColumn>[note];
+    final selection = db
+        .joinFrom(const Items(), as: 'i')
+        .where(note.equalsValue(null))
+        .select(columns);
+    columns.clear();
+    expect(await selection.count(), 1);
+    expect(() => selection.columns.clear(), throwsUnsupportedError);
+    expect(
+      () => db.joinFrom(const Items(), as: 'i').select([note, note]),
+      throwsArgumentError,
+    );
+  });
+
+  test(
+    'projected BLOB reloads suppress equal values and emit actual changes',
+    () async {
+      await db.items.insert(item(1));
+      await db.database.execute('ALTER TABLE items ADD COLUMN payload BLOB');
+      await db.database.update('items', {
+        'payload': Uint8List.fromList([1, 2]),
+      });
+      final payload = blob('payload');
+      for (final selection in [false, true]) {
+        final emissions = <Object?>[];
+        final initial = Completer<void>();
+        final stream = selection
+            ? db.items.select([payload]).watch()
+            : db.items.pluck(payload).watch();
+        final subscription = stream.listen((value) {
+          emissions.add(value);
+          if (!initial.isCompleted) initial.complete();
+        });
+        await initial.future;
+        nextRead = Completer<void>();
+        db.invalidate({const Items().tableId});
+        await nextRead!.future;
+        await Future<void>.delayed(Duration.zero);
+        expect(emissions, hasLength(1));
+        await subscription.cancel();
+        nextRead = null;
+      }
+    },
+  );
+
+  test('raw watches snapshot dependency and argument collections', () async {
+    await db.items.insert(item(1));
+    final dependencies = {const Items().tableId};
+    final arguments = <Object?>[1];
+    final stream = db.watchRaw(
+      'SELECT name FROM items WHERE id = ?',
+      arguments: arguments,
+      dependsOn: dependencies,
+    );
+    arguments[0] = 999;
+    dependencies.clear();
+    final values = StreamIterator(stream);
+    try {
+      await values.moveNext();
+      expect(values.current.single['name'], 'name1');
+      await db.items
+          .whereKey(1)
+          .update(DbValues.fromAssignments([Items.name.set('changed')]));
+      expect(await values.moveNext().timeout(const Duration(seconds: 3)), true);
+      expect(values.current.single['name'], 'changed');
     } finally {
       await values.cancel();
     }

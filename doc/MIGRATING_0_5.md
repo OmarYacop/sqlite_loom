@@ -60,3 +60,11 @@ With `batchSize`, bulk calls now consume iterables one chunk at a time. Earlier
 chunks remain committed if a later chunk or iterator fails outside a transaction.
 Wrap the whole operation in `db.transaction` for all-or-nothing persistence.
 Omitting batchSize preserves a single atomic batch and materializes all input.
+
+## Projection consistency
+
+First-row terminals now preserve `limit(0)` rather than replacing it with one.
+Joined selections reject duplicate result aliases, and their column lists are
+immutable. Raw watches snapshot their dependency/argument collections. Projected
+BLOB and JSON values use structural equality to suppress duplicate emissions;
+model watches still use `DbTable.equals`.
