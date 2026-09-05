@@ -94,6 +94,18 @@ void main() {
     );
     expect(id, 0);
     expect(changes, hasLength(1));
+    await db.items.whereKey(0).delete();
+    changes.clear();
+    final ignoredModeId = await db.items.insertValues(
+      DbValues.fromAssignments([
+        Items.name.set('generated with ignore'),
+        Items.parent.set(1),
+        Items.active.set(true),
+      ]),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    expect(ignoredModeId, 0);
+    expect(changes, hasLength(1));
   });
 
   test(

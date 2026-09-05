@@ -352,6 +352,7 @@ final class DbTableQuery<Row, Key> {
     // ambiguous case conservatively refresh rather than miss a stored row.
     if (insertedId != 0 ||
         conflictAlgorithm != ConflictAlgorithm.ignore ||
+        explicitKey == null ||
         explicitKey == 0) {
       _executor.record(
         _table.tableId,
@@ -390,6 +391,7 @@ final class DbTableQuery<Row, Key> {
         if (insertedId is int &&
             (insertedId != 0 ||
                 conflictAlgorithm != ConflictAlgorithm.ignore ||
+                encodedRows[index].asMap[_table.primaryKey.name] == null ||
                 encodedRows[index].asMap[_table.primaryKey.name] == 0)) {
           keys.add(
             encodedRows[index].asMap[_table.primaryKey.name] ?? insertedId,

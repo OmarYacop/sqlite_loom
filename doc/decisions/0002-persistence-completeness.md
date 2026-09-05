@@ -30,7 +30,7 @@ of a commit; the transaction summary records its outcome. Bound argument lists
 are never included; caller-supplied SQL and driver errors may contain literals.
 
 Record successful writes before application decoding. ID zero is valid. If
-IGNORE returns zero for an explicit zero key, conservatively invalidate because
+IGNORE returns zero for an explicit zero or generated key, conservatively invalidate because
 its result cannot distinguish a stored zero from an ignored insert. Preserve
 transaction accumulation and discard changes on rollback.
 

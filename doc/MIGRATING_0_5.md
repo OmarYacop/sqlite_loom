@@ -102,7 +102,7 @@ Use `DbSchema(database).validate(tables, requireAllColumns: true)` in developmen
 or migration tests to catch columns omitted from `DbTable.columns`, including
 generated columns. The default still permits partial mappings.
 
-Successful row ID zero inserts now invalidate watches. An ignored insert with an
-explicit zero key can cause a conservative refresh. `insertReturning` records the
+Successful row ID zero inserts now invalidate watches. An ignored insert with a
+zero or generated key can cause a conservative refresh. `insertReturning` records the
 stored key before decoding, so a decoder exception after a committed insert no
 longer leaves live queries stale. Inside a transaction, rollback still discards it.
