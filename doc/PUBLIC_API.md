@@ -80,3 +80,8 @@ the compatibility fixture, relevant consumer migrations, and the 1.0 roadmap.
   including RETURNING, optimistic updates and soft deletes.
 - Explicit batch sizes bound input materialization. Each batch commits separately
   outside a transaction; a surrounding transaction guarantees all-batch rollback.
+
+- First-row terminals preserve an explicit zero limit. Joined projection aliases
+  must be unique and cannot be mutated after selection construction.
+- Raw watches snapshot argument/dependency collections. Projection equality
+  compares BLOB and decoded JSON values; domain equality stays table-defined.

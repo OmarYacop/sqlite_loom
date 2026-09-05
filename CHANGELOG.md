@@ -15,6 +15,17 @@
   through other unique constraints.
 - Correct nullable join equality and freeze joined projection columns.
 
+- Share SQL ordering/pagination and projected value equality; BLOB/JSON watches
+  suppress equivalent reloaded values. Raw watches snapshot their dependencies
+  and argument collections. First-row terminals honor explicit zero limits.
+- Separate query projections, lifecycle/execution and CLI command responsibilities
+  while preserving public entry points and private library boundaries.
+- Add an executable transactional cache example, consumer workflow guide and
+  Flutter lifecycle recipe; declare all mapped columns in canonical examples.
+
+- Add host recovery regressions for disk-full rollback, backup/history restoration,
+  and non-destructive corruption failure.
+
 See `doc/MIGRATING_0_5.md` for the intentional pre-1.0 behavior changes.
 
 ## 0.4.0 - 2026-08-14

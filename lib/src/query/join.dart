@@ -45,28 +45,13 @@ final class DbJoinColumn<T> implements AnyDbJoinColumn {
   }
 
   DbOrdering ascending({String? collation, bool? nullsFirst}) => DbOrdering(
-    '$qualifiedSql${_joinCollation(collation)} ASC${_joinNulls(nullsFirst)}',
+    '$qualifiedSql${collationSql(collation)} ASC${nullOrderingSql(nullsFirst)}',
   );
 
   DbOrdering descending({String? collation, bool? nullsFirst}) => DbOrdering(
-    '$qualifiedSql${_joinCollation(collation)} DESC${_joinNulls(nullsFirst)}',
+    '$qualifiedSql${collationSql(collation)} DESC${nullOrderingSql(nullsFirst)}',
   );
 }
-
-String _joinCollation(String? collation) {
-  if (collation == null) return '';
-  final normalized = collation.trim().toUpperCase();
-  if (!const {'BINARY', 'NOCASE', 'RTRIM'}.contains(normalized)) {
-    throw ArgumentError.value(collation, 'collation', 'Unsupported collation');
-  }
-  return ' COLLATE $normalized';
-}
-
-String _joinNulls(bool? nullsFirst) => switch (nullsFirst) {
-  true => ' NULLS FIRST',
-  false => ' NULLS LAST',
-  null => '',
-};
 
 final class _DbJoinClause {
   const _DbJoinClause(this.kind, this.table, this.alias, this.on);
@@ -194,6 +179,10 @@ final class DbJoinSelection {
     if (columns.isEmpty) {
       throw ArgumentError.value(columns, 'columns', 'Cannot be empty');
     }
+    final names = columns.map((column) => column.resultName).toSet();
+    if (names.length != columns.length) {
+      throw ArgumentError('Joined result aliases must be distinct');
+    }
   }
 
   final DbJoinQuery _query;
@@ -226,7 +215,10 @@ final class DbJoinSelection {
   }
 
   Future<DbRow?> firstOrNull() async {
-    final selection = DbJoinSelection._(_query.limit(1), columns);
+    final selection = DbJoinSelection._(
+      _query.limit(firstLimit(_query._limit)),
+      columns,
+    );
     final rows = await selection.get();
     return rows.firstOrNull;
   }
@@ -261,7 +253,10 @@ final class DbJoinSelection {
   }
 
   Stream<DbRow?> watchFirstOrNull() {
-    final selection = DbJoinSelection._(_query.limit(1), columns);
+    final selection = DbJoinSelection._(
+      _query.limit(firstLimit(_query._limit)),
+      columns,
+    );
     return selection.watch().map((rows) => rows.firstOrNull);
   }
 
@@ -294,12 +289,7 @@ final class DbJoinSelection {
       );
     }
     if (includePagination) {
-      if (_query._limit != null) {
-        sql.write(' LIMIT ${_query._limit}');
-      } else if (_query._offset != null) {
-        sql.write(' LIMIT -1');
-      }
-      if (_query._offset != null) sql.write(' OFFSET ${_query._offset}');
+      sql.write(paginationSql(_query._limit, _query._offset));
     }
     return DbCompiledJoin(sql.toString(), List.unmodifiable(arguments));
   }

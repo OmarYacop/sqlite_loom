@@ -86,6 +86,9 @@ final class TodosTable extends DbTable<Todo, int> {
   DbColumn<int> get primaryKey => id;
 
   @override
+  Iterable<AnyDbColumn> get columns => [id, title, done];
+
+  @override
   Todo decode(DbRow row) => Todo(
         id: row.get(id),
         title: row.get(title),
@@ -103,7 +106,7 @@ final class TodosTable extends DbTable<Todo, int> {
   int keyOf(Todo row) => row.id!;
 }
 
-extension AppDatabase on SqliteLoom {
+extension AppDatabase on DbSession {
   DbTableQuery<Todo, int> get todos => table(const TodosTable());
 }
 ```
@@ -163,6 +166,10 @@ final summaries = await db.todos
 final firstTitle = summaries.first.get(TodosTable.title);
 ```
 
+For statically checked writes, use assignments such as
+`DbValues.fromAssignments([TodosTable.done.set(true)])`. Table extensions on
+`DbSession` work with normal database handles, transactions, and savepoints.
+
 Queries also provide `sum`, `average`, `minimum`, `maximum`, and `after`/`before`
 keyset cursor helpers. Text columns provide `like`, `contains`, `startsWith`,
 and `endsWith` predicates.
@@ -183,7 +190,10 @@ final pendingCount = rows.first.get(total.resultColumn);
 Use `compile()` to inspect generated SQL and bound arguments without executing
 it, or `explain()` to inspect SQLite's query plan and index usage.
 For bounded-memory processing, use `pages()` or `keysetPages()` with a unique
-cursor column.
+cursor column. Both honor the source limit and initial offset. For repeated sort
+values, use `keysetPagesBy([DbCursorColumn(timestamp), DbCursorColumn(id)])`
+with a unique tie-breaker. Cursor order must match any existing `orderBy`.
+Update/delete chains reject ordering and pagination rather than ignoring them.
 
 Selections support `distinct()` and `decodeWith(...)`. Cross-table reads use
 `joinFrom(...)` with explicitly qualified `DbJoinColumn` values so duplicate
@@ -288,7 +298,9 @@ await db.todos.upsertAll(synchronizedTodos);
 `upsert` and `upsertAll` use SQLite `ON CONFLICT ... DO UPDATE`, defaulting to
 the table primary key. Pass `conflictTarget` for another unique key. `save`
 retains explicit `INSERT OR REPLACE` behavior for compatibility.
-Bulk methods accept `batchSize` for bounded synchronization workloads. SQLite
+Bulk methods accept `batchSize` to consume input incrementally. Each chunk commits
+separately outside a transaction; wrap the call in `transaction` for all-chunk
+atomicity. SQLite
 `RETURNING` variants avoid follow-up reads, while `updateIfVersion` supports
 optimistic concurrency and `softDelete` updates deletion timestamps.
 
@@ -499,6 +511,11 @@ Scoped mutation shortcuts require JSON equality predicates or an explicit
 whole-table `--all`; `--dry-run` previews affected rows before authorization.
 
 ## Documentation
+
+- [0.5 migration guide](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/MIGRATING_0_5.md)
+- [Consumer workflow improvements](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/CONSUMER_WORKFLOWS.md)
+- [Flutter lifecycle recipe](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/FLUTTER_LIFECYCLE.md)
+- [Executable transactional cache example](https://github.com/OmarYacop/sqlite_loom/blob/main/example/transactional_cache.dart)
 
 Contributors can use the [internal architecture guide](https://github.com/OmarYacop/sqlite_loom/blob/main/doc/ARCHITECTURE.md) for
 folder responsibilities and dependency direction.

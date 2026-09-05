@@ -115,12 +115,13 @@ final class DbColumn<T> implements AnyDbColumn {
   }
 
   /// Orders this column from smallest to largest.
-  DbOrdering ascending({String? collation, bool? nullsFirst}) =>
-      DbOrdering('$sql${_collationSql(collation)} ASC${_nullsSql(nullsFirst)}');
+  DbOrdering ascending({String? collation, bool? nullsFirst}) => DbOrdering(
+    '$sql${collationSql(collation)} ASC${nullOrderingSql(nullsFirst)}',
+  );
 
   /// Orders this column from largest to smallest.
   DbOrdering descending({String? collation, bool? nullsFirst}) => DbOrdering(
-    '$sql${_collationSql(collation)} DESC${_nullsSql(nullsFirst)}',
+    '$sql${collationSql(collation)} DESC${nullOrderingSql(nullsFirst)}',
   );
 
   @override
@@ -193,22 +194,6 @@ final class TextDbColumn extends DbColumn<String> {
   /// Uses SQLite FTS `MATCH` syntax for a virtual-table column.
   DbPredicate matches(String query) => DbPredicate('$sql MATCH ?', [query]);
 }
-
-String _collationSql(String? collation) {
-  if (collation == null) return '';
-  final normalized = collation.trim().toUpperCase();
-  const supported = {'BINARY', 'NOCASE', 'RTRIM'};
-  if (!supported.contains(normalized)) {
-    throw ArgumentError.value(collation, 'collation', 'Unsupported collation');
-  }
-  return ' COLLATE $normalized';
-}
-
-String _nullsSql(bool? nullsFirst) => switch (nullsFirst) {
-  true => ' NULLS FIRST',
-  false => ' NULLS LAST',
-  null => '',
-};
 
 /// JSON1 predicates for JSON text columns.
 extension DbJsonPredicates on DbColumn<Object?> {

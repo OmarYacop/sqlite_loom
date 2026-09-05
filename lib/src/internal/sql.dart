@@ -29,3 +29,21 @@ String paginationSql(int? limit, int? offset) =>
         ? ' LIMIT -1'
         : ''}'
     '${offset != null ? ' OFFSET $offset' : ''}';
+
+String collationSql(String? collation) {
+  if (collation == null) return '';
+  final normalized = collation.trim().toUpperCase();
+  const supported = {'BINARY', 'NOCASE', 'RTRIM'};
+  if (!supported.contains(normalized)) {
+    throw ArgumentError.value(collation, 'collation', 'Unsupported collation');
+  }
+  return ' COLLATE $normalized';
+}
+
+String nullOrderingSql(bool? nullsFirst) => switch (nullsFirst) {
+  true => ' NULLS FIRST',
+  false => ' NULLS LAST',
+  null => '',
+};
+
+int firstLimit(int? limit) => limit == 0 ? 0 : 1;
